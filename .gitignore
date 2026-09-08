@@ -1,0 +1,12 @@
+# Secrets and environment variables
+.env
+.env.*
+
+# Python virtual environment
+.venv/
+
+# Editor settings (optional, but recommended)
+.vscode/
+
+# Supabase temporary files
+supabase/.temp/
