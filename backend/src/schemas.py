@@ -13,7 +13,7 @@ Design decisions
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field  # pyright: ignore[reportMissingImports]
@@ -50,6 +50,12 @@ class SensorPayload(BaseModel):
     readings: SensorReadings
 
 
+class AlertAcknowledgeRequest(BaseModel):
+    """``PATCH /alerts/{alert_id}/acknowledge`` request body."""
+
+    acknowledged_by: UUID | None = None
+
+
 # ── Response Schemas ─────────────────────────────────────────────────────
 
 
@@ -61,12 +67,49 @@ class HealthResponse(BaseModel):
 
 
 class DeviceStatusResponse(BaseModel):
-    """Compact device-status view returned after validation."""
+    """``GET /devices/{device_id}/status`` response with online/offline status."""
 
     device_id: str
     system_id: UUID
+    name: str
     is_active: bool
+    status: Literal["online", "offline"]
     last_seen: Optional[datetime] = None
+    minutes_since_last_seen: float | None = None
+
+
+class AlertResponse(BaseModel):
+    """Full alert record returned from management endpoints."""
+
+    id: UUID
+    system_id: UUID
+    device_id: str | None = None
+    severity: str
+    message: str
+    is_acknowledged: bool
+    acknowledged_by: UUID | None = None
+    acknowledged_at: datetime | None = None
+    created_at: datetime
+
+
+class AlertListResponse(BaseModel):
+    """Paginated alert list returned by ``GET /alerts``."""
+
+    alerts: list[AlertResponse]
+    total_count: int
+
+
+class HourlyAggregationResponse(BaseModel):
+    """Single row from the ``hourly_sensor_averages`` view."""
+
+    system_id: UUID
+    device_id: str
+    hour: datetime
+    avg_ph: float | None = None
+    avg_ec: float | None = None
+    avg_water_temperature: float | None = None
+    avg_air_temperature: float | None = None
+    avg_humidity: float | None = None
 
 
 class IngestionResponse(BaseModel):
@@ -83,3 +126,21 @@ class ErrorResponse(BaseModel):
     """Standardised error envelope."""
 
     detail: str
+
+
+class HourlyAggregationResponse(BaseModel):
+    system_id: UUID
+    device_id: str
+    bucket: datetime
+    avg_ph: float | None = None
+    avg_ec: float | None = None
+    avg_water_temp: float | None = None
+    avg_water_level: float | None = None
+    avg_air_temp: float | None = None
+    avg_humidity: float | None = None
+    avg_light_intensity: float | None = None
+    sample_count: int
+
+class AlertListResponse(BaseModel):
+    alerts: list[AlertResponse]
+    total_count: int

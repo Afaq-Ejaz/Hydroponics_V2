@@ -2,7 +2,7 @@
 
 ## 1. High-Level Architecture
 
-The HAT platform is an end-to-end IoT monitoring and alerting ecosystem designed for precision hydroponic farming. It connects physical sensor microcontrollers (ESP32) to an asynchronous FastAPI backend service, persists telemetry into a multi-tenant PostgreSQL database via Supabase, evaluates real-time alert conditions, and streams live telemetry to client applications (Flutter).
+The HAT platform is an end-to-end IoT monitoring and alerting ecosystem designed for precision hydroponic farming. It connects physical sensor microcontrollers (ESP32) to an asynchronous FastAPI backend service, persists telemetry into a multi-tenant PostgreSQL database via Supabase, evaluates real-time alert conditions, runs continuous background watchdogs to detect offline hardware, and streams live updates to client applications (Flutter).
 
 ```mermaid
 graph TD
@@ -11,9 +11,11 @@ graph TD
     end
 
     subgraph Backend ["Application Layer (FastAPI)"]
-        API["FastAPI Ingestion Service<br/>(backend/src/main.py)"]
+        API["FastAPI App<br/>(backend/src/main.py)"]
         Sec["Security & Auth<br/>(SHA-256 Device API Key)"]
         AlertEng["Alert Evaluation Engine<br/>(services/alert_service.py)"]
+        Watchdog["Watchdog Background Worker<br/>(services/watchdog_service.py)"]
+        Ops["Operations API<br/>(/status, /alerts/{id}/ack)"]
     end
 
     subgraph Data ["Persistence & Realtime (Supabase)"]
@@ -31,7 +33,12 @@ graph TD
     Sec -- "Validate Hash" --> DB
     API -- "Bypass RLS (Service Role)" --> DB
     API --> AlertEng
-    AlertEng -- "Insert Alerts" --> DB
+    AlertEng -- "Insert Threshold Alerts" --> DB
+    Watchdog -- "Scan Heartbeats every 60s" --> DB
+    Watchdog -- "Emit Deduplicated Offline Alerts" --> DB
+    Flutter -- "GET /devices/{id}/status" --> Ops
+    Flutter -- "PATCH /alerts/{id}/acknowledge" --> Ops
+    Ops --> DB
     DB --> RT
     RT -- "Live Telemetry & Alerts" --> Flutter
     Auth -- "JWT Token" --> Flutter
@@ -45,9 +52,9 @@ graph TD
 ```
 c:\HAT\
 ├── Progress/
-│   ├── architecture.md           # This document (System architecture & data flows)
-│   ├── current_state.md          # In-depth breakdown of current program cognition & capabilities
-│   └── dot.md                    # Project progress log, milestone matrix & roadmap
+│   ├── architecture.md           # This document (System architecture, diagrams & flows)
+│   ├── current_state.md          # Program cognition, capability boundaries & active gaps
+│   └── dot.md                    # Project progress tracker, milestone matrix & roadmap
 ├── backend/
 │   ├── .env                      # Local environment configuration (Supabase keys & thresholds)
 │   ├── pyproject.toml            # Project dependencies and pytest configuration
@@ -56,14 +63,16 @@ c:\HAT\
 │   │   ├── __init__.py
 │   │   ├── config.py             # 12-factor configuration via pydantic-settings
 │   │   ├── database.py           # Supabase client singleton (service-role privilege)
-│   │   ├── main.py               # FastAPI entry point (/health, /ingest endpoints & lifespan)
-│   │   ├── schemas.py            # Pydantic v2 telemetry request & response schemas
+│   │   ├── main.py               # FastAPI entry point, endpoints, and lifespan tasks
+│   │   ├── schemas.py            # Pydantic v2 telemetry, status, and alert models
 │   │   ├── security.py           # Device header auth (X-API-Key SHA-256 matching)
 │   │   └── services/
 │   │       ├── __init__.py
-│   │       └── alert_service.py  # Rule evaluation & alert record generation
+│   │       ├── alert_service.py  # Rule evaluation & threshold alert generation
+│   │       └── watchdog_service.py # Heartbeat monitor & offline alert deduplication
 │   └── tests/
-│       └── test_ingestion.py     # Automated unit & integration tests (FastAPI TestClient)
+│       ├── test_ingestion.py     # Ingestion & auth integration test suite (6 tests)
+│       └── test_operations.py    # Operations & watchdog integration test suite (6 tests)
 ├── supabase/
 │   ├── config.toml               # Supabase CLI and local stack configuration
 │   └── migrations/
@@ -75,37 +84,51 @@ c:\HAT\
 
 ## 3. Subsystem Breakdown
 
-### 3.1. Ingestion Backend Service (`backend/src/`)
+### 3.1. Ingestion & Operations Backend (`backend/src/`)
 
-Built with **FastAPI** for high-throughput, asynchronous sensor telemetry processing:
+Built with **FastAPI** for high-throughput, asynchronous telemetry processing and device operations:
 
-1. **Application Lifecycle & Health (`main.py`)**:
-   - `lifespan`: Validates database connectivity with Supabase upon startup using a warm-up query to the `devices` table.
-   - `GET /health`: Liveness probe returning `{ "status": "ok", "timestamp": "..." }`.
-   - `POST /ingest`: Protected ingestion endpoint for device sensor batches.
+1. **Application Lifecycle & Background Tasks (`main.py`)**:
+   - `lifespan`: Eagerly initializes the Supabase client and verifies database connectivity with `devices.select("id").limit(1)`.
+   - **Watchdog Background Task**: Launches an `asyncio.create_task(_watchdog_loop())` running `check_device_heartbeats()` every 60 seconds. Catches `asyncio.CancelledError` on server shutdown for graceful termination.
 
-2. **Security & Device Authentication (`security.py`)**:
-   - Hardware devices transmit a raw secret key in the `X-API-Key` HTTP header.
-   - The backend hashes this key using SHA-256 (`hashlib.sha256(raw_key.encode()).hexdigest()`).
-   - The hash is queried against `devices.api_key_hash`.
-   - Validates that `devices.is_active` is `true`. Deactivated devices receive `403 Forbidden`. Invalid keys receive `401 Unauthorized`.
+2. **Endpoints**:
+   - `GET /health`: Liveness probe returning `{ "status": "ok", "timestamp": ... }`.
+   - `POST /ingest`: Authenticates hardware, persists readings to `sensor_readings`, updates `devices.last_seen`, triggers alert evaluation, and returns `IngestionResponse`.
+   - `GET /devices/{device_id}/status`: Computes current status (`"online"` or `"offline"`) and elapsed time (`minutes_since_last_seen`) by comparing `devices.last_seen` against `DEVICE_OFFLINE_THRESHOLD_MINUTES` (5 mins). Returns HTTP 404 if device is unknown.
+   - `PATCH /alerts/{alert_id}/acknowledge`: Marks an alert as resolved (`is_acknowledged = true`, `acknowledged_at = now`). Idempotent: if already acknowledged, returns the record unchanged without updating timestamps. Accepts optional `acknowledged_by` user UUID. Returns HTTP 404 if alert is unknown.
 
-3. **Data Validation & Resilience (`schemas.py`)**:
-   - All individual sensor probes in `SensorReadings` are typed as `float | None`. This design ensures intermittent probe disconnections (e.g., pH probe unplugged) do not cause validation failure or block other working sensors.
-   - `timestamp` defaults to timezone-aware UTC now (`datetime.now(timezone.utc)`) if not explicitly provided by edge hardware.
-   - Strict cross-check: The `device_id` in the JSON body must match the authenticated device from the API key; otherwise, `400 Bad Request` is raised.
+3. **Security & Device Authentication (`security.py`)**:
+   - Receives `X-API-Key` HTTP header.
+   - Computes SHA-256 digest (`hashlib.sha256(raw_key.encode()).hexdigest()`).
+   - Compares with stored digest in `devices.api_key_hash` using constant-time comparison (`hmac.compare_digest`).
+   - Validates `devices.is_active` (`403 Forbidden` if false; `401 Unauthorized` if invalid key or missing header).
 
-4. **Alert Evaluation Service (`services/alert_service.py`)**:
-   - Analyzes persisted readings against configured environmental thresholds.
-   - Evaluates:
-     - **pH**: Critical alerts if `pH < ALERT_PH_MIN` (5.5) or `pH > ALERT_PH_MAX` (6.5).
-     - **Water Temperature**: Warning alerts if `temp > ALERT_WATER_TEMP_MAX` (26.0°C) or `temp < ALERT_WATER_TEMP_MIN` (16.0°C).
-   - Generates unacknowledged alert rows with severity, timestamps, and system/device identifiers, and commits them to the `alerts` table.
+4. **Data Models & Validation (`schemas.py`)**:
+   - `SensorReadings`: Wide-format sensor probe readings where each field is `float | None` to tolerate hardware probe disconnections.
+   - `SensorPayload`: Encapsulates `device_id`, UTC-defaulted `timestamp`, and `SensorReadings`.
+   - `DeviceStatusResponse`: Exposes `device_id`, `system_id`, `name`, `is_active`, `status` (`Literal["online", "offline"]`), `last_seen`, and `minutes_since_last_seen`.
+   - `AlertAcknowledgeRequest`: Optional `acknowledged_by` (UUID).
+   - `AlertResponse`: Complete alert model matching database row structure.
+   - `IngestionResponse` & `HealthResponse`: Deterministic API responses.
 
-5. **Configuration Management (`config.py`)**:
-   - Implements 12-factor configuration via `pydantic-settings`.
-   - Reads from `backend/.env` with real environment variable overrides.
-   - Stores alert limits and device health intervals (`DEVICE_OFFLINE_THRESHOLD_MINUTES = 5`).
+5. **Alert Evaluation Service (`services/alert_service.py`)**:
+   - Evaluates sensor values against environmental safety thresholds:
+     - **pH**: Critical alert if $\text{pH} < 5.5$ or $\text{pH} > 6.5$.
+     - **Water Temperature**: Warning alert if $\text{Temp} > 26.0^\circ\text{C}$ or $\text{Temp} < 16.0^\circ\text{C}$.
+   - Unhandled evaluation exceptions are logged and non-blocking.
+
+6. **Device Offline Watchdog Service (`services/watchdog_service.py`)**:
+   - `check_device_heartbeats() -> int`:
+     1. Fetches all active devices (`is_active = true`).
+     2. Identifies devices with stale `last_seen` ($> 5$ minutes) or `None`.
+     3. Checks `alerts` table for existing unacknowledged offline alerts matching `like("message", "%stopped reporting%")`.
+     4. If an active alert already exists, skips insertion (deduplication).
+     5. If no active alert exists, inserts a new `critical` alert and increments the counter.
+
+7. **Configuration Management (`config.py`)**:
+   - Singleton `Settings` loaded via `pydantic-settings` from `.env`.
+   - Exposes database credentials, threshold parameters, and `DEVICE_OFFLINE_THRESHOLD_MINUTES = 5`.
 
 ---
 
@@ -142,7 +165,6 @@ Automated testing framework orchestrated via **pytest** and **Starlette / FastAP
 1. **Configuration (`pyproject.toml`)**:
    - Manages dependencies using `uv`.
    - Defines `tool.pytest.ini_options` with `pythonpath = ["."]`, allowing direct imports from `src.*`.
-   - Development dependencies include `pytest>=9.1.1` and `httpx>=0.28.1`.
 
 2. **Ingestion & Security Verification (`tests/test_ingestion.py`)**:
    - `test_health_endpoint`: Asserts that `GET /health` returns HTTP 200 with status `"ok"` and a timestamp.
@@ -152,9 +174,19 @@ Automated testing framework orchestrated via **pytest** and **Starlette / FastAP
    - `test_ingest_partial_probes_tolerated`: Asserts that sparse payloads (where some sensor values are `None` or omitted) succeed with HTTP 201 Created and `status: "accepted"`.
    - `test_ingest_threshold_alert_generation`: Asserts that submitting biochemical values outside acceptable bounds (e.g., pH 4.5 and water temp 28.0°C) triggers alert generation (`alerts_generated >= 2`) and persists alerts to the database.
 
+3. **Operations & Watchdog Verification (`tests/test_operations.py`)**:
+   - `test_get_device_status_online`: Asserts that a device with recent `last_seen` reports status `"online"`.
+   - `test_get_device_status_offline`: Asserts that a device with `last_seen` older than 5 minutes reports status `"offline"`.
+   - `test_get_device_status_not_found`: Asserts that querying a non-existent device returns HTTP 404.
+   - `test_acknowledge_alert_success`: Inserts an alert, sends `PATCH /alerts/{id}/acknowledge`, and asserts `is_acknowledged = True` and updated timestamp.
+   - `test_acknowledge_alert_not_found`: Asserts that acknowledging a non-existent alert UUID returns HTTP 404.
+   - `test_watchdog_detects_offline_device_and_deduplicates`: Sets a device to stale (15 mins ago), executes `check_device_heartbeats()` verifying 1 alert is created, then executes a second run verifying 0 alerts are created (deduplication confirmed).
+
 ---
 
-## 4. End-to-End Ingestion Data Flow
+## 4. End-to-End Data Flows
+
+### 4.1. Telemetry Ingestion Flow
 
 ```mermaid
 sequenceDiagram
@@ -196,6 +228,62 @@ sequenceDiagram
     end
 ```
 
+### 4.2. Watchdog Heartbeat & Offline Alert Cycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Loop as Watchdog Loop (Every 60s)
+    participant Svc as watchdog_service.py
+    participant DB as Supabase PostgreSQL
+    participant RT as Supabase Realtime
+    actor App as Flutter Client
+
+    Loop->>Svc: check_device_heartbeats()
+    Svc->>DB: SELECT * FROM devices WHERE is_active = true
+    DB-->>Svc: Active devices list
+    
+    loop Each Device
+        Svc->>Svc: Compare now_utc - last_seen against 5m threshold
+        alt Device is Stale (> 5 min or None)
+            Svc->>DB: SELECT id FROM alerts WHERE device_id = id AND is_acknowledged = false AND message LIKE '%stopped reporting%'
+            DB-->>Svc: Existing unacknowledged offline alerts
+            
+            alt Existing Alert Found
+                Svc->>Svc: Skip (Deduplication prevents flood)
+            else No Active Alert
+                Svc->>DB: INSERT into alerts (severity="critical", message="Device ... stopped reporting")
+                DB->>RT: Broadcast critical alert
+                RT->>App: Push offline device notification
+            end
+        end
+    end
+```
+
+### 4.3. Alert Acknowledgment Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Op as Operator / Client
+    participant API as FastAPI (/alerts/{id}/acknowledge)
+    participant DB as Supabase PostgreSQL
+
+    Op->>API: PATCH /alerts/{alert_id}/acknowledge (optional body: acknowledged_by)
+    API->>DB: SELECT * FROM alerts WHERE id = alert_id
+    DB-->>API: Alert record
+    
+    alt Alert Not Found
+        API-->>Op: 404 Not Found {"detail": "Alert not found"}
+    else Already Acknowledged (is_acknowledged == true)
+        API-->>Op: 200 OK with existing AlertResponse (Idempotent)
+    else Pending Acknowledgment
+        API->>DB: UPDATE alerts SET is_acknowledged=true, acknowledged_at=now, acknowledged_by=uid
+        DB-->>API: Updated record
+        API-->>Op: 200 OK with updated AlertResponse
+    end
+```
+
 ---
 
 ## 5. Security & Isolation Model
@@ -204,3 +292,4 @@ sequenceDiagram
 2. **Tenant Isolation**: Users only see data from systems to which they have explicitly been granted membership (`public.has_system_access()`).
 3. **Data Integrity**: Edge devices cannot forge readings for other systems or other device IDs. The backend validates device ownership against the database registry before writing.
 4. **Backend Privilege Separation**: The backend operates as a trusted service worker via the Supabase Service Role key, while mobile clients operate under restricted Row-Level Security via user JWTs.
+5. **Worker Resiliency & Resource Guarding**: Background watchdog tasks run cooperatively within the event loop, handle cancellation signals on shutdown, and apply query-level deduplication to prevent database bloating.
