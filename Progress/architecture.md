@@ -51,33 +51,37 @@ graph TD
 
 ```
 c:\HAT\
+├── .env                                            # Root environment variables
+├── .gitignore                                      # Git ignore rules
 ├── Progress/
-│   ├── architecture.md           # This document (System architecture, diagrams & flows)
-│   ├── current_state.md          # Program cognition, capability boundaries & active gaps
-│   └── dot.md                    # Project progress tracker, milestone matrix & roadmap
+│   ├── architecture.md                             # Architecture, component breakdown & data flows
+│   ├── current_state.md                            # Capabilities, file inventory & active gaps
+│   └── dot.md                                      # Milestone progress tracker & roadmap
 ├── backend/
-│   ├── .env                      # Local environment configuration (Supabase keys & thresholds)
-│   ├── pyproject.toml            # Project dependencies and pytest configuration
-│   ├── uv.lock                   # Deterministic package dependency lockfile
+│   ├── .env                                        # Local backend configuration (Supabase keys & thresholds)
+│   ├── pyproject.toml                              # Project configuration & pytest options (uv managed)
+│   ├── uv.lock                                     # Deterministic dependency lockfile
 │   ├── src/
 │   │   ├── __init__.py
-│   │   ├── config.py             # 12-factor configuration via pydantic-settings
-│   │   ├── database.py           # Supabase client singleton (service-role privilege)
-│   │   ├── main.py               # FastAPI entry point, endpoints, and lifespan tasks
-│   │   ├── schemas.py            # Pydantic v2 telemetry, status, and alert models
-│   │   ├── security.py           # Device header auth (X-API-Key SHA-256 matching)
+│   │   ├── config.py                               # Settings & threshold limits via pydantic-settings
+│   │   ├── database.py                             # Supabase client singleton (service_role bypass)
+│   │   ├── main.py                                 # FastAPI app (6 endpoints) + watchdog lifespan loop
+│   │   ├── schemas.py                              # Pydantic v2 schemas (telemetry, devices, alerts, rollups)
+│   │   ├── security.py                             # X-API-Key validation via constant-time SHA-256
 │   │   └── services/
 │   │       ├── __init__.py
-│   │       ├── alert_service.py  # Rule evaluation & threshold alert generation
-│   │       └── watchdog_service.py # Heartbeat monitor & offline alert deduplication
+│   │       ├── alert_service.py                    # Threshold evaluation (pH & water temperature)
+│   │       └── watchdog_service.py                 # Offline node detector & alert deduplication
 │   └── tests/
-│       ├── test_ingestion.py     # Ingestion & auth integration test suite (6 tests)
-│       └── test_operations.py    # Operations & watchdog integration test suite (6 tests)
-├── supabase/
-│   ├── config.toml               # Supabase CLI and local stack configuration
-│   └── migrations/
-│       └── 20260907102838_initial_schema.sql  # Database tables, RLS, triggers & indexes
-└── .env                          # Root environment variables
+│       ├── test_ingestion.py                       # Ingestion & auth test suite (6 tests)
+│       ├── test_operations.py                      # Device status & alert ack test suite (6 tests)
+│       └── test_queries.py                         # Alert filtering & hourly rollup test suite (3 tests)
+└── supabase/
+    ├── config.toml                                 # Supabase local stack configuration
+    └── migrations/
+        ├── 20260907102838_initial_schema.sql       # Tables, RLS, user sync trigger & composite indexes
+        ├── 20260909102900_telemetry_rollups.sql    # Hourly aggregation view (telemetry_hourly_rollups)
+        └── 20260909103319_telemtry_rollups.sql     # Remote-deployed telemetry rollups migration
 ```
 
 ---
@@ -97,6 +101,8 @@ Built with **FastAPI** for high-throughput, asynchronous telemetry processing an
    - `POST /ingest`: Authenticates hardware, persists readings to `sensor_readings`, updates `devices.last_seen`, triggers alert evaluation, and returns `IngestionResponse`.
    - `GET /devices/{device_id}/status`: Computes current status (`"online"` or `"offline"`) and elapsed time (`minutes_since_last_seen`) by comparing `devices.last_seen` against `DEVICE_OFFLINE_THRESHOLD_MINUTES` (5 mins). Returns HTTP 404 if device is unknown.
    - `PATCH /alerts/{alert_id}/acknowledge`: Marks an alert as resolved (`is_acknowledged = true`, `acknowledged_at = now`). Idempotent: if already acknowledged, returns the record unchanged without updating timestamps. Accepts optional `acknowledged_by` user UUID. Returns HTTP 404 if alert is unknown.
+   - `GET /alerts`: Server-side filtered query for alerts by `system_id` (required), optional `is_acknowledged`, optional `severity`, `limit` (max 100), and `offset`. Uses PostgREST `count="exact"` for true pagination total. Returns `AlertListResponse`.
+   - `GET /systems/{system_id}/telemetry/hourly`: Queries `telemetry_hourly_rollups` view for downsampled sensor averages (`avg_ph`, `avg_ec`, `avg_water_temp`, `avg_water_level`, `avg_air_temp`, `avg_humidity`, `avg_light_intensity`, `sample_count`) over a selectable time range. Returns `list[HourlyAggregationResponse]`.
 
 3. **Security & Device Authentication (`security.py`)**:
    - Receives `X-API-Key` HTTP header.
@@ -181,6 +187,11 @@ Automated testing framework orchestrated via **pytest** and **Starlette / FastAP
    - `test_acknowledge_alert_success`: Inserts an alert, sends `PATCH /alerts/{id}/acknowledge`, and asserts `is_acknowledged = True` and updated timestamp.
    - `test_acknowledge_alert_not_found`: Asserts that acknowledging a non-existent alert UUID returns HTTP 404.
    - `test_watchdog_detects_offline_device_and_deduplicates`: Sets a device to stale (15 mins ago), executes `check_device_heartbeats()` verifying 1 alert is created, then executes a second run verifying 0 alerts are created (deduplication confirmed).
+
+4. **Query & Aggregation Verification (`tests/test_queries.py`)**:
+   - `test_get_alerts_filtered`: Asserts that `GET /alerts` returns filtered results for a valid `system_id` and checks pagination schema.
+   - `test_get_alerts_missing_system_id`: Asserts that omitting required `system_id` returns HTTP 422 Unprocessable Entity.
+   - `test_get_hourly_telemetry_empty`: Asserts that `GET /systems/{id}/telemetry/hourly` returns a valid list conforming to `HourlyAggregationResponse`.
 
 ---
 
@@ -282,6 +293,21 @@ sequenceDiagram
         DB-->>API: Updated record
         API-->>Op: 200 OK with updated AlertResponse
     end
+```
+
+### 4.4. Telemetry Downsampling & Query Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Dashboard / Client
+    participant API as FastAPI (/systems/.../telemetry/hourly)
+    participant DB as Supabase (telemetry_hourly_rollups)
+
+    Client->>API: GET /systems/{id}/telemetry/hourly?limit=168
+    API->>DB: SELECT * FROM telemetry_hourly_rollups WHERE system_id = id ORDER BY bucket ASC
+    DB-->>API: Pre-aggregated hourly buckets (avg_ph, avg_temp, sample_count...)
+    API-->>Client: 200 OK list[HourlyAggregationResponse]
 ```
 
 ---

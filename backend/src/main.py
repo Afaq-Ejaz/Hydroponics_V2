@@ -23,7 +23,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, status  # type: igno
 from supabase import Client
 
 from src.config import get_settings
-from src.database import get_db, get_supabase_client
+from src.database import get_db, get_supabase, get_supabase_client
 from src.schemas import (
     AlertAcknowledgeRequest,
     AlertListResponse,
@@ -39,15 +39,8 @@ from src.security import authenticate_device
 from src.services.alert_service import evaluate_alerts
 from src.services.watchdog_service import check_device_heartbeats
 
-from src.schemas import (
-    # ... your other schemas like IngestionResponse, etc. ...
-    AlertListResponse, 
-    HourlyAggregationResponse
-)
-
 logger = logging.getLogger("hydroponics")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-
 
 
 # ── Background watchdog worker ──────────────────────────────────────────
@@ -341,39 +334,29 @@ def _parse_datetime(value: str | datetime) -> datetime:
     tags=["Alerts"],
     summary="List and filter alerts",
 )
-async def list_alerts(
-    system_id: UUID = Query(..., description="System UUID (required)"),
-    device_id: str | None = Query(None, description="Filter by device ID"),
-    is_acknowledged: bool | None = Query(None, description="Filter by acknowledgment state"),
-    severity: str | None = Query(None, description="Filter by severity (info, warning, critical)"),
-    limit: int = Query(50, ge=1, le=100, description="Max results (1–100)"),
-    db: Client = Depends(get_db),
-) -> AlertListResponse:
-    """Return a filtered, paginated list of alerts for a system."""
-    query = (
-        db.table("alerts")
-        .select("*")
-        .eq("system_id", str(system_id))
-    )
+def get_alerts(
+    system_id: str,
+    device_id: str | None = None,
+    is_acknowledged: bool | None = None,
+    severity: str | None = None,
+    limit: int = 50,
+):
+    """Fetch and filter active or historical alerts."""
+    supabase = get_supabase()
+    query = supabase.table("alerts").select("*", count="exact").eq("system_id", system_id)
 
-    if device_id is not None:
+    if device_id:
         query = query.eq("device_id", device_id)
     if is_acknowledged is not None:
         query = query.eq("is_acknowledged", is_acknowledged)
-    if severity is not None:
+    if severity:
         query = query.eq("severity", severity)
 
-    response = (
-        query
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
-    )
+    response = query.order("created_at", desc=True).limit(limit).execute()
 
-    alerts = response.data or []
     return AlertListResponse(
-        alerts=[AlertResponse(**a) for a in alerts],
-        total_count=len(alerts),
+        alerts=response.data,
+        total_count=response.count if response.count else len(response.data),
     )
 
 
@@ -386,20 +369,15 @@ async def list_alerts(
     tags=["Telemetry"],
     summary="Hourly-averaged sensor telemetry",
 )
-async def get_hourly_telemetry(
-    system_id: UUID,
-    limit: int = Query(24, ge=1, le=168, description="Number of hourly buckets (default 24)"),
-    db: Client = Depends(get_db),
-) -> list[HourlyAggregationResponse]:
-    """Query the ``hourly_sensor_averages`` view for downsampled telemetry."""
+def get_hourly_telemetry(system_id: str, limit: int = 24):
+    """Fetch downsampled historical telemetry for charting."""
+    supabase = get_supabase()
     response = (
-        db.table("hourly_sensor_averages")
+        supabase.table("telemetry_hourly_rollups")
         .select("*")
-        .eq("system_id", str(system_id))
-        .order("hour", desc=True)
+        .eq("system_id", system_id)
+        .order("bucket", desc=True)
         .limit(limit)
         .execute()
     )
-
-    rows = response.data or []
-    return [HourlyAggregationResponse(**row) for row in rows]
+    return response.data

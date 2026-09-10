@@ -100,16 +100,19 @@ class AlertListResponse(BaseModel):
 
 
 class HourlyAggregationResponse(BaseModel):
-    """Single row from the ``hourly_sensor_averages`` view."""
+    """Single row from the ``telemetry_hourly_rollups`` view."""
 
     system_id: UUID
     device_id: str
-    hour: datetime
+    bucket: datetime
     avg_ph: float | None = None
     avg_ec: float | None = None
-    avg_water_temperature: float | None = None
-    avg_air_temperature: float | None = None
+    avg_water_temp: float | None = None
+    avg_water_level: float | None = None
+    avg_air_temp: float | None = None
     avg_humidity: float | None = None
+    avg_light_intensity: float | None = None
+    sample_count: int
 
 
 class IngestionResponse(BaseModel):
@@ -126,21 +129,3 @@ class ErrorResponse(BaseModel):
     """Standardised error envelope."""
 
     detail: str
-
-
-class HourlyAggregationResponse(BaseModel):
-    system_id: UUID
-    device_id: str
-    bucket: datetime
-    avg_ph: float | None = None
-    avg_ec: float | None = None
-    avg_water_temp: float | None = None
-    avg_water_level: float | None = None
-    avg_air_temp: float | None = None
-    avg_humidity: float | None = None
-    avg_light_intensity: float | None = None
-    sample_count: int
-
-class AlertListResponse(BaseModel):
-    alerts: list[AlertResponse]
-    total_count: int

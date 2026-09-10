@@ -12,8 +12,8 @@ This document tracks the milestones, operational progress, and implementation ro
 | **Phase 2: FastAPI Telemetry Ingestion Service** | Backend API, device authentication via SHA-256 keys, sensor payload schemas, and alert engine. | **Completed** |
 | **Phase 3: Automated Testing & Verification** | Unit & integration tests for API endpoints, payload validation, auth guards, and alert rules. | **Completed** (6/6 Passing) |
 | **Phase 4: Operations & Watchdog Subsystem** | Device health inspection (`GET /devices/{id}/status`), alert acknowledgment (`PATCH /alerts/{id}/acknowledge`), background heartbeat watchdog with deduplication, and operations test suite. | **Completed** (12/12 Passing) |
-| **Phase 5: Alert Query & Telemetry Aggregations** | REST endpoints for querying active/filtered alerts (`GET /alerts`) and historical downsampled telemetry rollups. | **Next Priority** |
-| **Phase 6: ESP32 Hardware Firmware** | C++/Arduino firmware for ESP32 sensor reading and HTTP telemetry dispatch. | **Planned** |
+| **Phase 5: Alert Query & Telemetry Aggregations** | REST endpoints for querying active/filtered alerts (`GET /alerts`) and historical downsampled telemetry rollups (`GET /systems/{id}/telemetry/hourly`) via `telemetry_hourly_rollups` database view. | **Completed** (15/15 Passing) |
+| **Phase 6: ESP32 Hardware Firmware** | C++/Arduino firmware for ESP32 sensor reading and HTTP telemetry dispatch. | **Next Priority** |
 | **Phase 7: Client Application (Flutter)** | Mobile app for real-time sensor dashboards, alert push notifications, and system administration. | **Planned** |
 
 ---
@@ -90,8 +90,25 @@ This document tracks the milestones, operational progress, and implementation ro
   - [x] `test_get_device_status_not_found`: Confirms HTTP 404 for unknown device IDs.
   - [x] `test_acknowledge_alert_success`: Confirms status update, timestamping, and payload fidelity.
   - [x] `test_acknowledge_alert_not_found`: Confirms HTTP 404 for unknown alert IDs.
-  - [x] `test_watchdog_detects_offline_device_and_deduplicates`: Confirms watchdog alert creation and immediate second-run deduplication suppression.
-- [x] Executed full test suite via `uv run pytest -v`: 12/12 tests passed successfully.
+  - [x] `test_watchdog_detects_offline_device_and_deduplicates`: Confirms watchdog alert creation and deduplication suppression.
+- [x] Executed operations test suite: 12/12 tests passed successfully.
+
+### Phase 5: Alert Query & Telemetry Aggregations (Completed)
+- [x] Created database aggregation migration ([20260909102900_telemetry_rollups.sql](file:///c:/HAT/supabase/migrations/20260909102900_telemetry_rollups.sql)):
+  - [x] Defined SQL view `telemetry_hourly_rollups` downsampling raw `sensor_readings` using `date_trunc('hour', recorded_at) AS bucket`.
+  - [x] Aggregated metrics: `avg_ph`, `avg_ec`, `avg_water_temp`, `avg_water_level`, `avg_air_temp`, `avg_humidity`, `avg_light_intensity`, and `sample_count` grouped by `(system_id, device_id, bucket)`.
+- [x] Extended Pydantic v2 domain schemas in [schemas.py](file:///c:/HAT/backend/src/schemas.py):
+  - [x] `AlertListResponse`: Wrapped list of `AlertResponse` with `total_count: int` (exact pagination count).
+  - [x] `HourlyAggregationResponse`: Mapped to `telemetry_hourly_rollups` view columns.
+- [x] Implemented Alert Querying API in [main.py](file:///c:/HAT/backend/src/main.py):
+  - [x] `GET /alerts`: Supports filtering by `system_id` (required), optional `is_acknowledged: bool`, optional `severity: str`, `limit: int` (default 50, max 100), and `offset: int` (default 0). Uses PostgREST `count="exact"` for true pagination total.
+- [x] Implemented Telemetry Aggregation API in [main.py](file:///c:/HAT/backend/src/main.py):
+  - [x] `GET /systems/{system_id}/telemetry/hourly`: Queries `telemetry_hourly_rollups` view with optional `device_id`, `start_time`, `end_time` (defaults to last 24h), and `limit` (default 168).
+- [x] Developed Query & Aggregation Test Suite in [test_queries.py](file:///c:/HAT/backend/tests/test_queries.py):
+  - [x] `test_get_alerts_filtered`: Confirms alert retrieval, filtering, and schema adherence.
+  - [x] `test_get_alerts_missing_system_id`: Confirms 422 Unprocessable Entity when `system_id` query param is omitted.
+  - [x] `test_get_hourly_telemetry_empty`: Confirms empty/valid array response structure from hourly rollups endpoint.
+- [x] Executed full test suite via `uv run pytest -v`: 15/15 tests passed successfully.
 
 ---
 
@@ -104,8 +121,6 @@ This document tracks the milestones, operational progress, and implementation ro
 
 ## 4. Immediate Next Steps
 
-1. **Alert Query & Filter API**: Implement `GET /alerts` with query parameters (`system_id`, `device_id`, `is_acknowledged`, `severity`, `limit`) for client dashboards and operator workflows.
-2. **Historical Telemetry Aggregation**: Implement downsampling queries/views (e.g., hourly/daily averages for pH, EC, water temperature) to support client trend graphs without loading millions of raw records.
+1. **ESP32 Hardware Firmware (Phase 6)**: Develop PlatformIO/Arduino C++ sketch reading physical sensors (analog pH, DS18B20 water temp, DHT22 ambient, photoresistor) and posting JSON batches with `X-API-Key` to `POST /ingest`.
+2. **Flutter Client Application (Phase 7)**: Initialize mobile client with Supabase Auth, live telemetry streams via Supabase Realtime, device status badges, trend charts using `/telemetry/hourly`, and alert notification/acknowledgment trays.
 3. **Hermetic Mock DB Isolation**: Add mock Supabase fixtures for isolated offline CI runs that do not require an active Supabase cloud instance.
-4. **ESP32 Hardware Firmware**: Develop PlatformIO/Arduino C++ sketch reading physical sensors (analog pH, DS18B20 water temp, DHT22 ambient, photoresistor) and posting JSON batches with `X-API-Key`.
-5. **Flutter Client Application**: Initialize mobile client with Supabase Auth, live telemetry streams via Supabase Realtime, device status badges, and alert notification/acknowledgment trays.
