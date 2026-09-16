@@ -40,6 +40,8 @@ class SensorReadings(BaseModel):
     air_temperature: float | None = None
     humidity: float | None = None
     light_intensity: float | None = None
+    moisture: float | None = None
+    flow_rate: float | None = None
 
 
 class SensorPayload(BaseModel):
@@ -112,6 +114,8 @@ class HourlyAggregationResponse(BaseModel):
     avg_air_temp: float | None = None
     avg_humidity: float | None = None
     avg_light_intensity: float | None = None
+    avg_moisture: float | None = None
+    avg_flow_rate: float | None = None
     sample_count: int
 
 
