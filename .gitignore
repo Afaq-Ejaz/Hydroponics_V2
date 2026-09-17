@@ -10,3 +10,10 @@
 
 # Supabase temporary files
 supabase/.temp/
+
+# Flutter / Dart
+client/build/
+client/.dart_tool/
+client/.packages
+client/.pub-cache/
+client/.pub/

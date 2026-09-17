@@ -1,126 +1,70 @@
-# Project Progress Tracker
+# 🚀 HAT Project Progress Tracker
 
-This document tracks the milestones, operational progress, and implementation roadmap for the **HAT (Hydroponics Automation & Telemetry)** platform.
-
----
-
-## 1. Milestones Overview
-
-| Milestone | Description | Status |
-|---|---|---|
-| **Phase 1: Database & Persistence Foundation** | PostgreSQL schema, multi-tenancy, RLS policies, Realtime publication, and Supabase config. | **Completed** (Commit `0f53f97`) |
-| **Phase 2: FastAPI Telemetry Ingestion Service** | Backend API, device authentication via SHA-256 keys, sensor payload schemas, and alert engine. | **Completed** |
-| **Phase 3: Automated Testing & Verification** | Unit & integration tests for API endpoints, payload validation, auth guards, and alert rules. | **Completed** (6/6 Passing) |
-| **Phase 4: Operations & Watchdog Subsystem** | Device health inspection (`GET /devices/{id}/status`), alert acknowledgment (`PATCH /alerts/{id}/acknowledge`), background heartbeat watchdog with deduplication, and operations test suite. | **Completed** (12/12 Passing) |
-| **Phase 5: Alert Query & Telemetry Aggregations** | REST endpoints for querying active/filtered alerts (`GET /alerts`) and historical downsampled telemetry rollups (`GET /systems/{id}/telemetry/hourly`) via `telemetry_hourly_rollups` database view. | **Completed** (15/15 Passing) |
-| **Phase 6: ESP32 Hardware Firmware** | C++/Arduino firmware for ESP32 sensor reading and HTTP telemetry dispatch. | **Next Priority** |
-| **Phase 7: Client Application (Flutter)** | Mobile app for real-time sensor dashboards, alert push notifications, and system administration. | **Planned** |
+Welcome! This document tracks the milestones, completed work, and upcoming roadmap for the **HAT (Hydroponics Automation & Telemetry)** platform in simple, easy-to-understand terms.
 
 ---
 
-## 2. Detailed Progress Log
+## 🚦 Phase Summary at a Glance
 
-### Phase 1: Database & Supabase Infrastructure (Completed)
-- [x] Initialized Supabase project configuration for `HAT` ([config.toml](file:///c:/HAT/supabase/config.toml)).
-- [x] Enabled PostgreSQL extensions (`uuid-ossp`).
-- [x] Implemented core schema migration ([20260907102838_initial_schema.sql](file:///c:/HAT/supabase/migrations/20260907102838_initial_schema.sql)):
-  - [x] `profiles` table synced with Supabase Auth users via trigger `on_auth_user_created`.
-  - [x] `hydroponic_systems` table for physical system metadata.
-  - [x] `system_members` table with `member_role` enum (`owner`, `operator`, `viewer`) for multi-tenant RBAC.
-  - [x] `devices` table with SHA-256 API key hash storage, system association, and `last_seen` timestamp.
-  - [x] `sensor_readings` table supporting wide-format telemetry (pH, EC, water temperature, water level, air temperature, humidity, light intensity).
-  - [x] `alerts` table with `alert_severity` enum (`info`, `warning`, `critical`) and acknowledgement tracking.
-- [x] Added database indexes for high-frequency queries:
-  - `idx_sensor_readings_system_time` on `(system_id, recorded_at DESC)`.
-  - `idx_system_members_lookup` on `(user_id, system_id)`.
-  - `idx_alerts_unacknowledged` partial index on `(system_id) WHERE is_acknowledged = false`.
-- [x] Configured Row-Level Security (RLS):
-  - Function `public.has_system_access(system_id)` to isolate tenant access.
-  - Blocked direct user inserts on `sensor_readings` (`WITH CHECK (false)`) so only the backend service can write data.
-- [x] Enabled Realtime replication for `sensor_readings` and `alerts`.
-
-### Phase 2: FastAPI Backend Ingestion Service (Completed)
-- [x] Restructured project layout, migrating from placeholder root `src/` to a dedicated `backend/` application package.
-- [x] Built 12-factor configuration module ([config.py](file:///c:/HAT/backend/src/config.py)) using `pydantic-settings` to load `.env` settings and alert thresholds.
-- [x] Established Supabase database integration ([database.py](file:///c:/HAT/backend/src/database.py)) using `service_role` authorization for high-throughput sensor writing.
-- [x] Implemented device authentication layer ([security.py](file:///c:/HAT/backend/src/security.py)):
-  - Cryptographic validation of raw `X-API-Key` headers using SHA-256 digests.
-  - Active device verification (`devices.is_active`).
-- [x] Defined Pydantic v2 telemetry request and response schemas ([schemas.py](file:///c:/HAT/backend/src/schemas.py)):
-  - Tolerant `SensorReadings` model handling optional/disconnected sensor probes.
-  - Standardized JSON responses for `/health`, `/ingest`, and errors.
-- [x] Developed automated alert evaluation service ([alert_service.py](file:///c:/HAT/backend/src/services/alert_service.py)):
-  - Real-time pH threshold checks (triggering `critical` alerts if $< 5.5$ or $> 6.5$).
-  - Water temperature checks (triggering `warning` alerts if $< 16.0^\circ\text{C}$ or $> 26.0^\circ\text{C}$).
-  - Persistent insertion into Supabase `alerts` table.
-- [x] Implemented FastAPI endpoints & application lifecycle ([main.py](file:///c:/HAT/backend/src/main.py)):
-  - Database connectivity verification on startup `lifespan`.
-  - `GET /health` liveness probe.
-  - `POST /ingest` pipeline: device auth $\to$ identity cross-check $\to$ database insertion $\to$ `last_seen` update $\to$ alert evaluation $\to$ structured JSON response.
-
-### Phase 3: Automated Testing & Verification Suite (Completed)
-- [x] Configured Python package dependencies and test environment via [pyproject.toml](file:///c:/HAT/backend/pyproject.toml) and [uv.lock](file:///c:/HAT/backend/uv.lock).
-- [x] Configured `pytest` runner settings (`pythonpath = ["."]`).
-- [x] Developed comprehensive API test suite in [test_ingestion.py](file:///c:/HAT/backend/tests/test_ingestion.py) utilizing Starlette / FastAPI `TestClient`:
-  - [x] `test_health_endpoint`: Confirmed `/health` liveness probe returns HTTP 200 with `{ "status": "ok" }`.
-  - [x] `test_ingest_missing_api_key`: Confirmed requests lacking `X-API-Key` are rejected with HTTP 401.
-  - [x] `test_ingest_invalid_api_key`: Confirmed forged/unregistered keys are rejected with HTTP 401.
-  - [x] `test_ingest_device_id_mismatch`: Confirmed identity mismatch raises HTTP 400 Bad Request.
-  - [x] `test_ingest_partial_probes_tolerated`: Confirmed sparse payloads with missing or null probes return HTTP 201 Created and `status: "accepted"`.
-  - [x] `test_ingest_threshold_alert_generation`: Confirmed out-of-range sensor readings trigger real-time alert row creation in the database (`alerts_generated >= 2`).
-- [x] Executed full test run via `uv run pytest`: 6/6 tests passed successfully.
-
-### Phase 4: Operations & Watchdog Subsystem (Completed)
-- [x] Extended Pydantic v2 domain models in [schemas.py](file:///c:/HAT/backend/src/schemas.py):
-  - [x] `AlertAcknowledgeRequest`: Optional `acknowledged_by` (UUID) for user audit attribution.
-  - [x] `AlertResponse`: Full alert schema (`id`, `system_id`, `device_id`, `severity`, `message`, `is_acknowledged`, `acknowledged_by`, `acknowledged_at`, `created_at`).
-  - [x] `DeviceStatusResponse`: Extended with `name`, `is_active`, `status` (`Literal["online", "offline"]`), `last_seen`, and `minutes_since_last_seen`.
-- [x] Implemented Alert Acknowledgment API in [main.py](file:///c:/HAT/backend/src/main.py):
-  - [x] `PATCH /alerts/{alert_id}/acknowledge`: Validates alert existence (404 on missing), guarantees idempotency (returns existing alert if already acknowledged without overwriting timestamps), updates `is_acknowledged = True`, `acknowledged_at = UTC now`, and optional `acknowledged_by`.
-- [x] Implemented Device Status Inspection API in [main.py](file:///c:/HAT/backend/src/main.py):
-  - [x] `GET /devices/{device_id}/status`: Resolves device metadata, evaluates elapsed time against `DEVICE_OFFLINE_THRESHOLD_MINUTES` (5 mins), calculates `minutes_since_last_seen`, and returns strict `"online"` or `"offline"` status.
-- [x] Built Device Offline Watchdog Service in [watchdog_service.py](file:///c:/HAT/backend/src/services/watchdog_service.py):
-  - [x] `check_device_heartbeats() -> int`: Scans active devices (`is_active = True`), detects stale heartbeats, verifies deduplication against active unacknowledged offline alerts (`like("message", "%stopped reporting%")`), and persists critical alerts.
-- [x] Integrated Asynchronous Watchdog Worker into FastAPI `lifespan` ([main.py](file:///c:/HAT/backend/src/main.py)):
-  - [x] Background worker task (`asyncio.create_task`) executing every 60 seconds.
-  - [x] Graceful shutdown handling on application termination via `asyncio.CancelledError`.
-- [x] Developed Operations Test Suite in [test_operations.py](file:///c:/HAT/backend/tests/test_operations.py):
-  - [x] `test_get_device_status_online`: Verifies online state for recently active device.
-  - [x] `test_get_device_status_offline`: Verifies offline state for stale device (> 5 minutes).
-  - [x] `test_get_device_status_not_found`: Confirms HTTP 404 for unknown device IDs.
-  - [x] `test_acknowledge_alert_success`: Confirms status update, timestamping, and payload fidelity.
-  - [x] `test_acknowledge_alert_not_found`: Confirms HTTP 404 for unknown alert IDs.
-  - [x] `test_watchdog_detects_offline_device_and_deduplicates`: Confirms watchdog alert creation and deduplication suppression.
-- [x] Executed operations test suite: 12/12 tests passed successfully.
-
-### Phase 5: Alert Query & Telemetry Aggregations (Completed)
-- [x] Created database aggregation migration ([20260909102900_telemetry_rollups.sql](file:///c:/HAT/supabase/migrations/20260909102900_telemetry_rollups.sql)):
-  - [x] Defined SQL view `telemetry_hourly_rollups` downsampling raw `sensor_readings` using `date_trunc('hour', recorded_at) AS bucket`.
-  - [x] Aggregated metrics: `avg_ph`, `avg_ec`, `avg_water_temp`, `avg_water_level`, `avg_air_temp`, `avg_humidity`, `avg_light_intensity`, and `sample_count` grouped by `(system_id, device_id, bucket)`.
-- [x] Extended Pydantic v2 domain schemas in [schemas.py](file:///c:/HAT/backend/src/schemas.py):
-  - [x] `AlertListResponse`: Wrapped list of `AlertResponse` with `total_count: int` (exact pagination count).
-  - [x] `HourlyAggregationResponse`: Mapped to `telemetry_hourly_rollups` view columns.
-- [x] Implemented Alert Querying API in [main.py](file:///c:/HAT/backend/src/main.py):
-  - [x] `GET /alerts`: Supports filtering by `system_id` (required), optional `is_acknowledged: bool`, optional `severity: str`, `limit: int` (default 50, max 100), and `offset: int` (default 0). Uses PostgREST `count="exact"` for true pagination total.
-- [x] Implemented Telemetry Aggregation API in [main.py](file:///c:/HAT/backend/src/main.py):
-  - [x] `GET /systems/{system_id}/telemetry/hourly`: Queries `telemetry_hourly_rollups` view with optional `device_id`, `start_time`, `end_time` (defaults to last 24h), and `limit` (default 168).
-- [x] Developed Query & Aggregation Test Suite in [test_queries.py](file:///c:/HAT/backend/tests/test_queries.py):
-  - [x] `test_get_alerts_filtered`: Confirms alert retrieval, filtering, and schema adherence.
-  - [x] `test_get_alerts_missing_system_id`: Confirms 422 Unprocessable Entity when `system_id` query param is omitted.
-  - [x] `test_get_hourly_telemetry_empty`: Confirms empty/valid array response structure from hourly rollups endpoint.
-- [x] Executed full test suite via `uv run pytest -v`: 15/15 tests passed successfully.
+| Phase | What It Is | Status | Notes |
+| :--- | :--- | :--- | :--- |
+| **Phase 1: Database Foundation** | PostgreSQL database tables, user security rules, real-time live updates in Supabase. | ✅ **Completed** | Database is fully configured and ready. |
+| **Phase 2: FastAPI Backend Service** | Python backend server (`POST /ingest`), security checks, and threshold alert calculations. | ✅ **Completed** | Receives data from ESP32, checks for safety limits. |
+| **Phase 3: Automated Tests** | Automated test suite verifying backend API endpoints and safety alerts. | ✅ **Completed** | 6/6 tests passing. |
+| **Phase 4: Operations & Watchdog** | Background worker that checks if ESP32 went offline, plus alert acknowledgement API. | ✅ **Completed** | 12/12 tests passing. Alerts created if hardware disconnects. |
+| **Phase 5: Telemetry Aggregations** | REST APIs for filtering alerts (`GET /alerts`) and hourly averaged chart data (`GET /telemetry/hourly`). | ✅ **Completed** | 15/15 tests passing. Ready for dashboard charts! |
+| **Phase 6: ESP32 Hardware Firmware** | C++ code for ESP32-S3 microchip, reading sensors and sending HTTP POST telemetry to backend. | ✅ **Completed** | **Live & Tested!** ESP32 sends real sensor readings every 30 sec. |
+| **Phase 7: Client App (Flutter)** | Mobile & Web Dashboard app for real-time monitoring, push alerts, and remote relay control. | 🟡 **IN PROGRESS** | Steps 1, 2, & 3 complete! Project scaffolded, email auth working, GoRouter 5-tab shell built. |
 
 ---
 
-## 3. Current Documentation References
+## 📜 Detailed Log of What Has Been Built
 
-- [architecture.md](file:///c:/HAT/Progress/architecture.md): Complete architecture specification, component breakdown, data flow, watchdog lifecycle, and test subsystem.
-- [current_state.md](file:///c:/HAT/Progress/current_state.md): Deep-dive into what the program currently understands, capabilities, boundaries, and active gaps.
+### ✅ Phase 1: Database & Supabase Infrastructure
+- Created database tables for **Users**, **Hydroponic Systems**, **Devices**, **Sensor Readings**, and **Alerts**.
+- Added security policies (RLS) so unauthorized users cannot see or modify other users' hydroponics data.
+- Enabled Supabase **Realtime** so sensor updates stream live to user screens instantly.
+
+### ✅ Phase 2: Python Backend Service (`backend/`)
+- Built a high-speed Python FastAPI backend server.
+- **Security**: ESP32 authenticates using a secret API Key (`dev_secret_key_abc123`), which is safely checked using SHA-256 cryptographic hashing.
+- **Alert Engine**: Automatically checks incoming readings. If pH is too high/low ($<5.5$ or $>6.5$) or water temperature is out of safe range ($<16^\circ\text{C}$ or $>26^\circ\text{C}$), it creates an alert in the database.
+
+### ✅ Phase 3 & 4: Automated Testing & Watchdog System
+- **15 Automated Tests**: Verified that ingestion, security, alert rules, status queries, and data aggregation work 100% reliably.
+- **Watchdog Worker**: Runs every 60 seconds in the background. If the ESP32 stops sending data for over 5 minutes, it creates a "Device Offline" alert automatically.
+
+### ✅ Phase 5: Querying & Hourly Chart Downsampling
+- Created `GET /alerts` endpoint with pagination and filtering by system ID, severity, or acknowledged status.
+- Created `GET /systems/{id}/telemetry/hourly` endpoint to return hourly average values for temperature, humidity, moisture, EC, and water level — perfect for drawing smooth historical line charts.
+
+### ✅ Phase 6: ESP32-S3 Hardware Firmware (`firmware/`)
+- **Firmware Code ([main.cpp](file:///c:/HAT/firmware/src/main.cpp))**: Written in C++ for PlatformIO on ESP32-S3.
+- **Active Sensors Connected & Verified**:
+  - 🧪 **EC / TDS Sensor** on `GPIO 3` (Safe ADC1 pin)
+  - 💧 **Soil/Substrate Moisture Sensor** on `GPIO 1` (Safe ADC1 pin)
+  - 🌡️ **DHT22 Air Temp & Humidity** on `GPIO 4`
+  - 📏 **Ultrasonic HC-SR04 Water Level** on `GPIO 5` (Trig) & `GPIO 18` (Echo)
+  - 🔌 **Relay Control** on `GPIO 2`
+- **Smart Features Built Into Firmware**:
+  - **Auto Wi-Fi Reconnect**: Keeps trying to connect to Wi-Fi (`UCP`) if disconnected.
+  - **Offline Retry Buffer**: If backend is down, saves up to 10 readings in ESP32 memory and sends them automatically once reconnected.
+  - **Serial Monitor USB Stability**: Includes a 5-second CDC USB handshake delay and DTR/RTS signal handling to prevent boot freezes.
+- **Excluded Probes (Temporarily Held for Future Rev)**:
+  - `pH Sensor` on GPIO 14 (ADC2 conflict with Wi-Fi)
+  - `Flow Sensor` on GPIO 19 (USB D- pin conflict)
 
 ---
 
-## 4. Immediate Next Steps
+## 🔜 Phase 7: What We Are Preparing For Next
 
-1. **ESP32 Hardware Firmware (Phase 6)**: Develop PlatformIO/Arduino C++ sketch reading physical sensors (analog pH, DS18B20 water temp, DHT22 ambient, photoresistor) and posting JSON batches with `X-API-Key` to `POST /ingest`.
-2. **Flutter Client Application (Phase 7)**: Initialize mobile client with Supabase Auth, live telemetry streams via Supabase Realtime, device status badges, trend charts using `/telemetry/hourly`, and alert notification/acknowledgment trays.
-3. **Hermetic Mock DB Isolation**: Add mock Supabase fixtures for isolated offline CI runs that do not require an active Supabase cloud instance.
+Now that the **Hardware (ESP32)**, **Database (Supabase)**, and **Backend API (FastAPI)** are all talking to each other seamlessly, the next step is **Phase 7: The Client App (Flutter)**!
+
+**Goals for Phase 7**:
+1. Initialize the Flutter cross-platform mobile & web project.
+2. Build a **Real-Time Hydroponic Dashboard**:
+   - Live gauge indicators for Temperature, Humidity, Moisture, EC, and Water Level.
+   - Status badge showing if ESP32 is `ONLINE` or `OFFLINE`.
+3. Build **Historical Charts** using `GET /systems/{id}/telemetry/hourly`.
+4. Build **Alerts Drawer** to display critical warnings and allow operators to click "Acknowledge".
+5. Build **Remote Relay Control** to turn pumps/lights ON or OFF from the app.
