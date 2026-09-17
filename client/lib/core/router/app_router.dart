@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../features/alerts/providers/alerts_provider.dart';
 import '../../features/alerts/screens/alerts_screen.dart';
 import '../../features/auth/providers/auth_provider.dart';
 import '../../features/auth/screens/login_screen.dart';
@@ -222,6 +223,8 @@ class _SystemContextGateState extends ConsumerState<_SystemContextGate> {
 
   Widget _buildShell(BuildContext context, int currentIndex,
       {required Widget child}) {
+    final unreadAlerts = ref.watch(unreadAlertsCountProvider).valueOrNull ?? 0;
+
     return Scaffold(
       body: child,
       bottomNavigationBar: Container(
@@ -244,32 +247,42 @@ class _SystemContextGateState extends ConsumerState<_SystemContextGate> {
             height: 64,
             indicatorColor: AppColors.primarySurface,
             labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-            destinations: const [
-              NavigationDestination(
+            destinations: [
+              const NavigationDestination(
                 icon: Icon(Icons.grid_view_outlined),
                 selectedIcon:
                     Icon(Icons.grid_view_rounded, color: AppColors.primary),
                 label: 'Dashboard',
               ),
-              NavigationDestination(
+              const NavigationDestination(
                 icon: Icon(Icons.show_chart_outlined),
                 selectedIcon:
                     Icon(Icons.show_chart_rounded, color: AppColors.primary),
                 label: 'Charts',
               ),
-              NavigationDestination(
+              const NavigationDestination(
                 icon: Icon(Icons.history_outlined),
                 selectedIcon:
                     Icon(Icons.history_rounded, color: AppColors.primary),
                 label: 'History',
               ),
               NavigationDestination(
-                icon: Icon(Icons.notifications_outlined),
-                selectedIcon: Icon(Icons.notifications_rounded,
-                    color: AppColors.primary),
+                icon: Badge(
+                  label: Text('$unreadAlerts'),
+                  isLabelVisible: unreadAlerts > 0,
+                  backgroundColor: AppColors.alertCritical,
+                  child: const Icon(Icons.notifications_outlined),
+                ),
+                selectedIcon: Badge(
+                  label: Text('$unreadAlerts'),
+                  isLabelVisible: unreadAlerts > 0,
+                  backgroundColor: AppColors.alertCritical,
+                  child: const Icon(Icons.notifications_rounded,
+                      color: AppColors.primary),
+                ),
                 label: 'Alerts',
               ),
-              NavigationDestination(
+              const NavigationDestination(
                 icon: Icon(Icons.settings_outlined),
                 selectedIcon:
                     Icon(Icons.settings_rounded, color: AppColors.primary),

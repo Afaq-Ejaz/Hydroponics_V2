@@ -127,6 +127,15 @@ class SensorMeta {
       isActiveProbe: false,
       decimalPlaces: 0,
     ),
+    SensorMeta(
+      fieldName: 'flow_rate',
+      label: 'Flow Rate',
+      unit: 'L/min',
+      icon: Icons.water_outlined,
+      color: AppColors.sensorFlow,
+      isActiveProbe: false,
+      decimalPlaces: 2,
+    ),
   ];
 
   /// All sensors combined (active first, then inactive).
@@ -134,4 +143,12 @@ class SensorMeta {
     ...activeSensors,
     ...inactiveSensors,
   ];
+
+  /// Fast lookup of metadata by database column name.
+  static SensorMeta? find(String fieldName) {
+    for (final meta in all) {
+      if (meta.fieldName == fieldName) return meta;
+    }
+    return null;
+  }
 }

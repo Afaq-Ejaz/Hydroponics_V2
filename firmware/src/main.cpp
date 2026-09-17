@@ -7,21 +7,31 @@
  *  Board  : ESP32-S3 DevKitC-1
  *  Backend: FastAPI /ingest endpoint (HTTP POST with X-API-Key)
  *
- *  Pin Map (from physical trace):
+ *  Pin Map (revised — all analog sensors moved to ADC1):
  *  ┌────────────────────┬──────────┬──────────────────────────────────┐
  *  │ Sensor             │ GPIO     │ Notes                            │
  *  ├────────────────────┼──────────┼──────────────────────────────────┤
+ *  │ pH Sensor (Analog) │ GPIO  6  │ ✅ ADC1 — safe with WiFi active  │
  *  │ TDS / EC (Analog)  │ GPIO  3  │ ✅ ADC1 — safe                   │
  *  │ Moisture (Analog)  │ GPIO  1  │ ✅ ADC1 — safe                   │
  *  │ DHT22   (Digital)  │ GPIO  4  │ ✅ air temp + humidity           │
  *  │ Ultrasonic Trig    │ GPIO  5  │ ✅                               │
  *  │ Ultrasonic Echo    │ GPIO 18  │ ✅                               │
- *  │ Relay   (Output)   │ GPIO  2  │ ✅                               │
+ *  │ Flow Sensor (Dig.) │ GPIO 19  │ ✅ Interrupt — pulse counting    │
+ *  │ Relay   (Output)   │ GPIO  2  │ ✅ Remote-controlled from app    │
  *  └────────────────────┴──────────┴──────────────────────────────────┘
  *
- *  EXCLUDED (will be added later):
- *    pH Sensor  (GPIO 14) — ADC2 conflict with Wi-Fi
- *    Flow Sensor (GPIO 19) — USB D- pin conflict
+ *  GPIO 19 NOTE:
+ *    GPIO 19 is the ESP32-S3's USB D- pin. With CDC_ON_BOOT=0 set in
+ *    platformio.ini, the native USB peripheral is fully disabled and
+ *    GPIO 19 works as a normal digital input. Serial goes through UART.
+ *    ⚠ Do NOT plug a USB cable into the native USB port while the flow
+ *    sensor is connected — use only the UART/COM USB port.
+ *
+ *  RELAY NOTE:
+ *    The relay is controlled remotely from the Flutter app via the
+ *    backend. Each loop cycle, the ESP32 polls GET /relay-command to
+ *    check if the user toggled the pump on/off.
  */
 
 #include <Arduino.h>
@@ -47,17 +57,50 @@ const char *DEVICE_ID = "ESP32_01";
 const unsigned long SEND_INTERVAL_MS = 30000; // 30 seconds between readings
 
 // ── Pin Definitions ────────────────────────────────────────────────────
-// Analog sensors
+// Analog sensors — ALL must stay on ADC1 (GPIO 1-10) since WiFi is active
 #define PIN_TDS 3      // ✅ ADC1
 #define PIN_MOISTURE 1 // ✅ ADC1
+#define PIN_PH 6       // ✅ ADC1 (moved from GPIO 14 / ADC2 — see header note)
+
+// ── pH Calibration ─────────────────────────────────────────────────────
+// These are PLACEHOLDERS. To calibrate properly:
+//   1. Rinse the probe, dip it in pH 7.0 buffer solution, let it settle
+//      (~30-60s), read the printed "Probe voltage" from Serial Monitor,
+//      and set PH_NEUTRAL_VOLTAGE to that value.
+//   2. Repeat in pH 4.0 buffer, note the voltage (V4).
+//   3. Slope (pH per volt) = (7.0 - 4.0) / (PH_NEUTRAL_VOLTAGE - V4)
+//      Set PH_SLOPE to that computed value (sign should stay positive
+//      here since lower voltage = more basic in this probe's wiring).
+const float PH_NEUTRAL_VOLTAGE = 2.50; // Voltage at pH 7.0 — CALIBRATE ME
+const float PH_SLOPE = 3.50;           // pH per volt — CALIBRATE ME
 
 // Digital sensors
 #define PIN_DHT 4   // DHT22 data pin
 #define PIN_TRIG 5  // Ultrasonic HC-SR04 trigger
 #define PIN_ECHO 18 // Ultrasonic HC-SR04 echo
+#define PIN_FLOW 19 // Flow sensor pulse output (YF-S201 or similar)
 
 // Actuators
-#define PIN_RELAY 2 // Relay control (active HIGH)
+#define PIN_RELAY 2 // Relay control (active HIGH) — remote via app
+
+// ── Flow Sensor Configuration ──────────────────────────────────────────
+// Calibration factor: pulses per litre (YF-S201 = 450 pulses/L,
+// which is 7.5 pulses per second per L/min)
+const float FLOW_CALIBRATION = 7.5; // pulses per second per L/min
+
+// ISR-safe pulse counter (volatile because modified inside interrupt)
+volatile unsigned long flowPulseCount = 0;
+unsigned long lastFlowReadTime = 0;
+
+// Interrupt Service Routine — increments on every rising edge
+void IRAM_ATTR flowPulseISR() {
+  flowPulseCount++;
+}
+
+// ── Relay Polling URL ──────────────────────────────────────────────────
+// The ESP32 polls this endpoint every cycle to check if the user
+// toggled the pump on/off from the Flutter app.
+String RELAY_POLL_URL = String("http://10.9.26.152:8000/devices/") + DEVICE_ID + "/relay-command";
 
 // ── DHT Setup ──────────────────────────────────────────────────────────
 #define DHT_TYPE DHT22
@@ -73,10 +116,34 @@ int bufferCount = 0;
 
 // ── Timing State ───────────────────────────────────────────────────────
 unsigned long lastSendTime = 0;
+bool currentRelayState = false; // tracks what the relay is currently set to
 
 // ═══════════════════════════════════════════════════════════════════════
 //  SENSOR READ FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════
+
+float lastPHVoltage = 0.0;
+
+/**
+ * Read pH sensor (analog, ADC1 pin — safe alongside WiFi).
+ * Takes 10 samples and averages them for clean noise rejection.
+ * Returns pH value constrained to 0.0 - 14.0.
+ */
+float readPH() {
+  long sum = 0;
+  for (int i = 0; i < 10; i++) {
+    sum += analogRead(PIN_PH);
+    delay(10);
+  }
+  float avgRaw = sum / 10.0;
+  float voltage = avgRaw * (3.3 / 4095.0);
+  lastPHVoltage = voltage;
+
+  // Standard pH formula: pH = 7.0 + ((V_neutral - V) * slope)
+  float ph = 7.0 + ((PH_NEUTRAL_VOLTAGE - voltage) * PH_SLOPE);
+  ph = constrain(ph, 0.0, 14.0);
+  return ph;
+}
 
 /**
  * Read TDS/EC sensor (analog).
@@ -128,6 +195,74 @@ float readWaterLevel() {
   // Speed of sound ≈ 0.034 cm/µs, divide by 2 for round-trip
   float distance_cm = (duration * 0.034) / 2.0;
   return distance_cm;
+}
+
+/**
+ * Read flow sensor rate (L/min).
+ * Uses interrupt-counted pulses since last call.
+ * Formula: flowRate = (pulseCount / calibrationFactor) / elapsedSeconds
+ */
+float readFlowRate() {
+  // Atomically read and reset the pulse counter
+  noInterrupts();
+  unsigned long pulses = flowPulseCount;
+  flowPulseCount = 0;
+  interrupts();
+
+  unsigned long now = millis();
+  float elapsedSec = (now - lastFlowReadTime) / 1000.0;
+  lastFlowReadTime = now;
+
+  if (elapsedSec <= 0) return 0.0;
+
+  // flowRate (L/min) = frequency (Hz) / calibration factor
+  float frequency = pulses / elapsedSec;
+  float flowRate = frequency / FLOW_CALIBRATION;
+  return flowRate;
+}
+
+/**
+ * Poll the backend for the desired relay state.
+ * Makes a lightweight GET request and parses {"relay_on": true/false}.
+ * If the backend is unreachable, keeps the relay in its last known state.
+ */
+void pollRelayCommand() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[Relay] Wi-Fi not connected — keeping current state.");
+    return;
+  }
+
+  HTTPClient http;
+  http.begin(RELAY_POLL_URL);
+  http.setTimeout(5000); // 5 second timeout — fast poll
+
+  int httpCode = http.GET();
+
+  if (httpCode == 200) {
+    String body = http.getString();
+    // Simple JSON parse for {"relay_on": true/false}
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, body);
+
+    if (!err && doc.containsKey("relay_on")) {
+      bool desired = doc["relay_on"].as<bool>();
+
+      if (desired != currentRelayState) {
+        currentRelayState = desired;
+        digitalWrite(PIN_RELAY, desired ? HIGH : LOW);
+        Serial.printf("[Relay] ⚡ State changed → %s\n", desired ? "ON" : "OFF");
+      } else {
+        Serial.printf("[Relay] Polled: %s (no change)\n", desired ? "ON" : "OFF");
+      }
+    } else {
+      Serial.println("[Relay] ⚠ Failed to parse relay command JSON.");
+    }
+  } else {
+    Serial.printf("[Relay] ⚠ Poll failed (HTTP %d) — keeping %s\n",
+                  httpCode, currentRelayState ? "ON" : "OFF");
+  }
+
+  http.end();
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -235,8 +370,8 @@ void flushBuffer() {
 //  BUILD JSON PAYLOAD
 // ═══════════════════════════════════════════════════════════════════════
 
-String buildPayload(float ec, float moisture, float airTemp, float humidity,
-                    float waterLevel) {
+String buildPayload(float ph, float ec, float moisture, float airTemp, float humidity,
+                    float waterLevel, float flowRate) {
   JsonDocument doc;
 
   doc["device_id"] = DEVICE_ID;
@@ -245,6 +380,8 @@ String buildPayload(float ec, float moisture, float airTemp, float humidity,
   JsonObject readings = doc["readings"].to<JsonObject>();
 
   // Only include values that are valid (non-NaN)
+  if (!isnan(ph) && ph > 0.0)
+    readings["ph"] = serialized(String(ph, 2));
   if (!isnan(ec))
     readings["ec"] = serialized(String(ec, 2));
   if (!isnan(moisture))
@@ -255,6 +392,8 @@ String buildPayload(float ec, float moisture, float airTemp, float humidity,
     readings["humidity"] = serialized(String(humidity, 2));
   if (waterLevel >= 0)
     readings["water_level"] = serialized(String(waterLevel, 2));
+  if (!isnan(flowRate) && flowRate >= 0)
+    readings["flow_rate"] = serialized(String(flowRate, 2));
 
   String output;
   serializeJson(doc, output);
@@ -267,14 +406,20 @@ String buildPayload(float ec, float moisture, float airTemp, float humidity,
 
 void setup() {
   Serial.begin(115200);
-  delay(1000); // Give serial monitor time to connect
+
+  // ── Wait for Serial connection ──────────────────────────────
+  unsigned long start = millis();
+  while (!Serial && (millis() - start < 3000)) {
+    delay(100);
+  }
+  delay(500);
 
   Serial.println();
   Serial.println("═══════════════════════════════════════════════════");
   Serial.println("  HAT — Hydroponics Automation Telemetry");
-  Serial.println("  ESP32-S3 Sensor Firmware v1.1");
-  Serial.println("  Active sensors: EC, Moisture, DHT22, Ultrasonic");
-  Serial.println("  Excluded: pH (GPIO 14), Flow (GPIO 19)");
+  Serial.println("  ESP32-S3 Sensor Firmware v2.0");
+  Serial.println("  Sensors: pH, EC, Moisture, DHT22, Ultrasonic, Flow");
+  Serial.println("  Actuators: Relay (remote pump control from app)");
   Serial.println("═══════════════════════════════════════════════════");
   Serial.println();
 
@@ -284,9 +429,16 @@ void setup() {
   pinMode(PIN_TRIG, OUTPUT);
   pinMode(PIN_ECHO, INPUT);
   pinMode(PIN_RELAY, OUTPUT);
+  pinMode(PIN_FLOW, INPUT_PULLUP); // Flow sensor open-collector output
 
   // Default relay OFF
   digitalWrite(PIN_RELAY, LOW);
+
+  // ── Initialise Flow Sensor Interrupt ───────────────────────────
+  // Count rising edges from the flow sensor's Hall-effect output
+  attachInterrupt(digitalPinToInterrupt(PIN_FLOW), flowPulseISR, RISING);
+  lastFlowReadTime = millis();
+  Serial.println("[Init] Flow sensor interrupt attached on GPIO 19");
 
   // ── Initialise DHT ─────────────────────────────────────────────
   dht.begin();
@@ -299,7 +451,7 @@ void setup() {
   Serial.println("[Init] ✅ Setup complete. Entering main loop.");
   Serial.printf("[Init] Sending readings every %lu seconds\n",
                 SEND_INTERVAL_MS / 1000);
-  Serial.println();
+  Serial.println("[Init] Relay controlled remotely via app poll.\n");
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -319,13 +471,16 @@ void loop() {
   Serial.println("[Read] Taking sensor readings...");
 
   // ── Read all active sensors ─────────────────────────────────────
+  float ph = readPH();
   float ec = readEC();
   float moisture = readMoisture();
   float airTemp = dht.readTemperature(); // °C
   float humidity = dht.readHumidity();   // %
   float waterLevel = readWaterLevel();   // cm (-1 if timeout)
+  float flowRate = readFlowRate();       // L/min
 
   // ── Print to Serial Monitor ────────────────────────────────────
+  Serial.printf("  pH           : %.2f (Probe voltage: %.3fV)\n", ph, lastPHVoltage);
   Serial.printf("  EC           : %.2f mS/cm\n", ec);
   Serial.printf("  Moisture     : %.2f %%\n", moisture);
 
@@ -342,10 +497,13 @@ void loop() {
     Serial.printf("  Water Level  : %.1f cm\n", waterLevel);
   }
 
+  Serial.printf("  Flow Rate    : %.2f L/min\n", flowRate);
+  Serial.printf("  Relay        : %s\n", currentRelayState ? "ON" : "OFF");
+
   Serial.println();
 
   // ── Build JSON payload ─────────────────────────────────────────
-  String payload = buildPayload(ec, moisture, airTemp, humidity, waterLevel);
+  String payload = buildPayload(ph, ec, moisture, airTemp, humidity, waterLevel, flowRate);
   Serial.printf("[JSON] %s\n", payload.c_str());
 
   // ── Ensure Wi-Fi ───────────────────────────────────────────────
@@ -360,6 +518,11 @@ void loop() {
   if (!sendToBackend(payload)) {
     bufferPayload(payload);
   }
+
+  // ── Poll backend for relay command ─────────────────────────────
+  // After sending sensor data, check if the user toggled the pump
+  // from the Flutter app. This keeps relay control responsive.
+  pollRelayCommand();
 
   Serial.println();
 }

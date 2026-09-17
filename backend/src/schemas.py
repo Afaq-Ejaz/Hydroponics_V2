@@ -133,3 +133,16 @@ class ErrorResponse(BaseModel):
     """Standardised error envelope."""
 
     detail: str
+
+
+class RelayStateRequest(BaseModel):
+    """``PUT /devices/{device_id}/relay-state`` request body."""
+
+    relay_on: bool = False
+
+
+class RelayStateResponse(BaseModel):
+    """``GET /devices/{device_id}/relay-state`` response body."""
+
+    device_id: str
+    relay_on: bool = False

@@ -33,6 +33,8 @@ from src.schemas import (
     HealthResponse,
     HourlyAggregationResponse,
     IngestionResponse,
+    RelayStateRequest,
+    RelayStateResponse,
     SensorPayload,
 )
 from src.security import authenticate_device
@@ -325,6 +327,78 @@ def _parse_datetime(value: str | datetime) -> datetime:
     return datetime.fromisoformat(raw)
 
 
+# ── Relay Control ───────────────────────────────────────────────────────
+
+
+@app.get(
+    "/devices/{device_id}/relay-state",
+    tags=["Devices"],
+    summary="Get current relay state for a device",
+)
+async def get_relay_state(
+    device_id: str,
+    db: Client = Depends(get_db),
+):
+    """Return the current relay_state for the given device."""
+    response = db.table("devices").select("id, relay_state").eq("id", device_id).execute()
+    if not response.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Device not found",
+        )
+    device = response.data[0]
+    return {"device_id": device["id"], "relay_on": device.get("relay_state", False)}
+
+
+@app.put(
+    "/devices/{device_id}/relay-state",
+    tags=["Devices"],
+    summary="Set relay state for a device (from Flutter app)",
+)
+async def set_relay_state(
+    device_id: str,
+    body: dict,
+    db: Client = Depends(get_db),
+):
+    """Update the relay_state column for the given device.
+
+    Expects JSON body: ``{ "relay_on": true/false }``
+    """
+    relay_on = body.get("relay_on", False)
+
+    response = db.table("devices").select("id").eq("id", device_id).execute()
+    if not response.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Device not found",
+        )
+
+    db.table("devices").update({"relay_state": relay_on}).eq("id", device_id).execute()
+    logger.info("Relay state for %s set to %s", device_id, relay_on)
+
+    return {"device_id": device_id, "relay_on": relay_on}
+
+
+@app.get(
+    "/devices/{device_id}/relay-command",
+    tags=["Devices"],
+    summary="Lightweight relay command poll endpoint (for ESP32)",
+)
+async def get_relay_command(
+    device_id: str,
+    db: Client = Depends(get_db),
+):
+    """Minimal endpoint the ESP32 calls every 30s to check relay state.
+
+    Returns ``{ "relay_on": true/false }`` with no extra fields for
+    fast parsing on the microcontroller.
+    """
+    response = db.table("devices").select("relay_state").eq("id", device_id).execute()
+    if not response.data:
+        return {"relay_on": False}
+    return {"relay_on": response.data[0].get("relay_state", False)}
+
+
 # ── Alert Querying ──────────────────────────────────────────────────────
 
 
@@ -381,3 +455,69 @@ def get_hourly_telemetry(system_id: str, limit: int = 24):
         .execute()
     )
     return response.data
+
+
+# ── Remote Relay Control ────────────────────────────────────────────────
+
+
+_in_memory_relay_states: dict[str, bool] = {}
+
+
+@app.get(
+    "/devices/{device_id}/relay-state",
+    response_model=RelayStateResponse,
+    tags=["Devices"],
+    summary="Get current relay state for a device",
+)
+async def get_relay_state(
+    device_id: str,
+    db: Client = Depends(get_db),
+) -> RelayStateResponse:
+    """Read the desired or active relay state for the device."""
+    try:
+        response = db.table("devices").select("relay_state").eq("id", device_id).execute()
+        if response.data and "relay_state" in response.data[0]:
+            return RelayStateResponse(
+                device_id=device_id,
+                relay_on=bool(response.data[0]["relay_state"]),
+            )
+    except Exception as exc:
+        logger.warning(
+            "DB relay_state read failed for %s (column may need migration): %s",
+            device_id,
+            exc,
+        )
+
+    # Fallback in-memory state
+    return RelayStateResponse(
+        device_id=device_id,
+        relay_on=_in_memory_relay_states.get(device_id, False),
+    )
+
+
+@app.put(
+    "/devices/{device_id}/relay-state",
+    response_model=RelayStateResponse,
+    tags=["Devices"],
+    summary="Set desired relay state for a device",
+)
+async def set_relay_state(
+    device_id: str,
+    body: RelayStateRequest,
+    db: Client = Depends(get_db),
+) -> RelayStateResponse:
+    """Set the relay ON or OFF for remote actuators (pump, lights, valve)."""
+    relay_on = body.relay_on
+    _in_memory_relay_states[device_id] = relay_on
+
+    try:
+        db.table("devices").update({"relay_state": relay_on}).eq("id", device_id).execute()
+    except Exception as exc:
+        logger.warning(
+            "DB relay_state update failed for %s (column may need migration): %s",
+            device_id,
+            exc,
+        )
+
+    logger.info("Device %s relay state updated to: %s", device_id, "ON" if relay_on else "OFF")
+    return RelayStateResponse(device_id=device_id, relay_on=relay_on)

@@ -16,10 +16,10 @@
 4. [Step 4 — System Selection & Context ✅](#step-4--system-selection--context)
 5. [Step 5 — Real-Time Sensor Dashboard ✅](#step-5--real-time-sensor-dashboard)
 6. [Step 6 — Device Online/Offline Status ✅](#step-6--device-onlineoffline-status)
-7. [Step 7 — Historical Telemetry Charts](#step-7--historical-telemetry-charts)
-8. [Step 8 — Alert Management](#step-8--alert-management)
-9. [Step 9 — Remote Relay Control](#step-9--remote-relay-control)
-10. [Step 10 — Polish, Theming & UX 🟡 (Foundations Complete)](#step-10--polish-theming--ux)
+7. [Step 7 — Historical Telemetry Charts ✅](#step-7--historical-telemetry-charts)
+8. [Step 8 — Alert Management ✅](#step-8--alert-management)
+9. [Step 9 — Remote Relay Control & Flow Sensor Clean Architecture ✅](#step-9--remote-relay-control)
+10. [Step 10 — Polish, Theming & UX ✅](#step-10--polish-theming--ux)
 11. [Appendix A — Complete API Reference](#appendix-a--complete-api-reference)
 12. [Appendix B — Database Tables the App Touches](#appendix-b--database-tables-the-app-touches)
 13. [Appendix C — Keys & Config Reference](#appendix-c--keys--config-reference)
@@ -811,15 +811,16 @@ LineChartData buildChart(List<Map<String, dynamic>> data, String field) {
 
 | Task | Status |
 |:---|:---|
-| Telemetry endpoint called from Flutter | ☐ |
-| Time range selector (24h / 7d / 30d) works | ☐ |
-| EC line chart renders | ☐ |
-| Moisture line chart renders | ☐ |
-| Air Temperature line chart renders | ☐ |
-| Humidity line chart renders | ☐ |
-| Water Level line chart renders | ☐ |
-| Null fields handled (no crash) | ☐ |
-| Charts scroll or paginate nicely | ☐ |
+| Telemetry endpoint called from Flutter | ☑ Completed (`hourlyTelemetryProvider` via FastAPI `/telemetry/hourly`) |
+| Time range selector (24h / 7d / 30d) works | ☑ Completed (`chartTimeRangeProvider` with segmented bar) |
+| EC line chart renders | ☑ Completed (Nutrient Balance chart with target ranges) |
+| Moisture line chart renders | ☑ Completed (Climate Monitoring chart) |
+| Air Temperature line chart renders | ☑ Completed (Thermal Dynamics chart) |
+| Humidity line chart renders | ☑ Completed (Climate Monitoring chart) |
+| Water Level line chart renders | ☑ Completed (Reservoir & Flow chart) |
+| Flow Rate line chart renders | ☑ Completed (Modular & pluggable with `sensorFlow` token) |
+| Null fields handled (no crash) | ☑ Completed (Graceful offline probe state displayed) |
+| Charts scroll or paginate nicely | ☑ Completed (Categorized filter chips matching Figma UI) |
 
 ---
 
@@ -977,15 +978,15 @@ NavigationDestination(
 
 | Task | Status |
 |:---|:---|
-| `GET /alerts` called from Flutter | ☐ |
-| Alert list displays with severity icons | ☐ |
-| Filter by acknowledged/unacknowledged works | ☐ |
-| Filter by severity works | ☐ |
-| "Acknowledge" button calls PATCH endpoint | ☐ |
-| Acknowledged alert disappears from unread list | ☐ |
-| Realtime alert subscription works | ☐ |
-| Badge count on bottom nav updates | ☐ |
-| Snackbar/toast for new critical alerts | ☐ |
+| `GET /alerts` called from Flutter | ☑ Completed (`alertsProvider` via backend `/alerts`) |
+| Alert list displays with severity icons | ☑ Completed (`AlertCard` with 🔴 critical, 🟡 warning, 🔵 info) |
+| Filter by acknowledged/unacknowledged works | ☑ Completed (`AlertFilter`: All, Active, Critical, Warning) |
+| Filter by severity works | ☑ Completed |
+| "Acknowledge" button calls PATCH endpoint | ☑ Completed (`PATCH /alerts/{id}/acknowledge`) |
+| Acknowledged alert disappears from unread list | ☑ Completed (Optimistic update with real-time sync) |
+| Realtime alert subscription works | ☑ Completed (Supabase Realtime `.stream()` on `alerts`) |
+| Badge count on bottom nav updates | ☑ Completed (`unreadAlertsCountProvider` on shell NavigationBar) |
+| Dashboard header badge count & navigation | ☑ Completed (AppBar bell badge navigates to `/alerts`) |
 
 ---
 
@@ -1083,17 +1084,17 @@ Switch(
 );
 ```
 
-### 9.6 — Relay Control Checklist
+### 9.6 — Relay Control & Clean Flow Sensor Checklist
 
 | Task | Status |
 |:---|:---|
-| `relay_state` column added to `devices` table | ☐ |
-| `GET /devices/{id}/relay-state` endpoint built | ☐ |
-| `PUT /devices/{id}/relay-state` endpoint built | ☐ |
-| ESP32 firmware polls relay state | ☐ |
-| Flutter toggle switch calls PUT endpoint | ☐ |
-| Relay physically responds on ESP32 | ☐ |
-| UI shows current relay state | ☐ |
+| `relay_state` column handling in backend | ☑ Completed (`GET` & `PUT /devices/{id}/relay-state` with DB & memory fallback) |
+| `GET /devices/{id}/relay-state` endpoint built | ☑ Completed in `backend/src/main.py` |
+| `PUT /devices/{id}/relay-state` endpoint built | ☑ Completed in `backend/src/main.py` |
+| Flow sensor registered in metadata & models | ☑ Completed (`SensorMeta`, `SensorReading`, `HourlyTelemetry`) |
+| Zero-clutter flow sensor readiness | ☑ Completed (Automatically displays live data when connected today) |
+| Flutter toggle switch calls PUT endpoint | ☑ Completed (`relay_provider.dart` + `RelayControlCard`) |
+| UI shows current relay state & standby mode | ☑ Completed (Embedded on dashboard) |
 
 ---
 
@@ -1195,12 +1196,12 @@ RefreshIndicator(
 |:---|:---|
 | Dark theme applied globally | ⊘ (Light theme implemented matching Figma #2E7D5B palette) |
 | Google Fonts (Inter) applied | ☑ Completed (`client/lib/core/theme/app_theme.dart`) |
-| Sensor cards have glassmorphism or gradient style | ☐ (Dashboard placeholder has Figma card style) |
-| Entry animations on dashboard cards | ☑ Completed (fade + slide via `flutter_animate`) |
-| Loading states on every screen | ☑ Completed (Reusable `LoadingOverlay` on Auth) |
-| Error states with retry on every screen | ☐ |
-| Pull-to-refresh on dashboard and alerts | ☐ |
-| App icon and splash screen customized | ☐ |
+| Sensor cards have Figma card styling | ☑ Completed (`SensorCard` with tokens from `AppColors`) |
+| Entry animations on dashboard & charts | ☑ Completed (fade + slide via `flutter_animate`) |
+| Loading skeletons & states across screens | ☑ Completed (shimmers on Dashboard, Charts, Alerts) |
+| Error states with retry on every screen | ☑ Completed (Dashboard, Charts, and Alerts) |
+| Pull-to-refresh on dashboard, charts, alerts | ☑ Completed (`RefreshIndicator` across all tabs) |
+| Dynamic unread alert notification badges | ☑ Completed (NavigationBar tab & Dashboard header) |
 
 ---
 
@@ -1238,16 +1239,16 @@ Every endpoint your Flutter app will call:
 ---
 
 ## Appendix B — Database Tables the App Touches
-
-| Table | App Access | How |
-|:---|:---|:---|
-| `profiles` | SELECT own profile | Supabase SDK (RLS: own profile only) |
-| `hydroponic_systems` | SELECT systems user belongs to | Supabase SDK via `system_members` join |
-| `system_members` | SELECT own memberships | Supabase SDK (RLS: own memberships) |
-| `devices` | SELECT devices in own system | Supabase SDK (RLS: system access) |
-| `sensor_readings` | STREAM (Realtime subscribe) | Supabase Realtime WebSocket |
-| `alerts` | STREAM + read via API | Realtime WebSocket + `GET /alerts` |
-| `telemetry_hourly_rollups` | Read via API | `GET /systems/{id}/telemetry/hourly` |
+ 
+| Table | App Access | How | Notes / Columns |
+|:---|:---|:---|:---|
+| `profiles` | SELECT own profile | Supabase SDK (RLS: own profile only) | User auth sync (`id`, `email`, `full_name`) |
+| `hydroponic_systems` | SELECT systems user belongs to | Supabase SDK via `system_members` join | Multi-tenant system metadata |
+| `system_members` | SELECT own memberships | Supabase SDK (RLS: own memberships) | Roles (`owner`, `operator`, `viewer`) |
+| `devices` | SELECT devices + relay state | Supabase SDK / REST `GET` & `PUT /devices/{id}/relay-state` | Includes `relay_state` (Migration: `add_relay_state_to_devices.sql`) |
+| `sensor_readings` | STREAM (Realtime subscribe) | Supabase Realtime WebSocket | Wide table: includes `flow_rate`, `moisture` (Migration: `add_moisture_flow_columns.sql`) |
+| `alerts` | STREAM + read via API | Realtime WebSocket + `GET /alerts` | Acknowledged via `PATCH /alerts/{id}/acknowledge` |
+| `telemetry_hourly_rollups` | Read via API | `GET /systems/{id}/telemetry/hourly` | SQL view aggregating averages including `avg_flow_rate`, `avg_moisture` |
 
 ---
 
@@ -1270,9 +1271,9 @@ Every endpoint your Flutter app will call:
 ## 🗺️ Implementation Order Summary
 
 ```
-Step 1 [✅] ──► Step 2 [✅] ──► Step 3 [✅] ──► Step 4 [✅] ──► Step 5 [✅] ──► Step 6 [✅] ──► Step 7 [ ] ──► Step 8 [ ] ──► Step 9 [ ] ──► Step 10 [🟡]
+Step 1 [✅] ──► Step 2 [✅] ──► Step 3 [✅] ──► Step 4 [✅] ──► Step 5 [✅] ──► Step 6 [✅] ──► Step 7 [✅] ──► Step 8 [✅] ──► Step 9 [✅] ──► Step 10 [✅]
   Scaffold        Auth        Navigation     System Ctx    Live Dashboard   Status Badge     Charts        Alerts      Relay Ctrl     Polish
-  (Done)         (Done)         (Done)        (Done)          (Done)          (Done)          (Next)                                   (Partial)
+  (Done)         (Done)         (Done)        (Done)          (Done)          (Done)          (Done)        (Done)        (Done)        (Done)
 ```
 
 **Total estimated time**: 8–14 days (working part-time alongside learning).

@@ -3,12 +3,17 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import 'package:go_router/go_router.dart';
+
 import '../../../core/theme/app_colors.dart';
+import '../../alerts/providers/alerts_provider.dart';
 import '../../system/providers/system_provider.dart';
 import '../models/sensor_meta.dart';
 import '../providers/device_status_provider.dart';
+import '../providers/relay_provider.dart';
 import '../providers/sensor_stream_provider.dart';
 import '../widgets/device_status_badge.dart';
+import '../widgets/relay_control_card.dart';
 import '../widgets/sensor_card.dart';
 import '../widgets/system_status_banner.dart';
 
@@ -29,6 +34,7 @@ class DashboardScreen extends ConsumerWidget {
 
     final deviceStatus = deviceStatusAsync.valueOrNull;
     final reading = sensorAsync.valueOrNull;
+    final unreadAlerts = ref.watch(unreadAlertsCountProvider).valueOrNull ?? 0;
 
     // Check if ANY sensor value is null for the footnote
     final hasNullValues = reading == null ||
@@ -46,11 +52,14 @@ class DashboardScreen extends ConsumerWidget {
             child: DeviceStatusBadge(status: deviceStatus),
           ),
           IconButton(
-            icon: const Badge(
-              smallSize: 8,
-              child: Icon(Icons.notifications_outlined),
+            icon: Badge(
+              label: Text('$unreadAlerts'),
+              isLabelVisible: unreadAlerts > 0,
+              backgroundColor: AppColors.alertCritical,
+              child: const Icon(Icons.notifications_outlined),
             ),
-            onPressed: () {},
+            tooltip: 'View Alerts',
+            onPressed: () => context.go('/alerts'),
           ),
           const SizedBox(width: 8),
         ],
@@ -58,9 +67,11 @@ class DashboardScreen extends ConsumerWidget {
       body: RefreshIndicator(
         color: AppColors.primary,
         onRefresh: () async {
-          // Invalidate the one-shot provider to force a refetch
+          // Invalidate providers to force a refetch
           ref.invalidate(latestReadingProvider);
           ref.invalidate(deviceStatusProvider);
+          ref.invalidate(relayStateProvider);
+          ref.invalidate(unreadAlertsCountProvider);
           // Small delay to show the indicator
           await Future.delayed(const Duration(milliseconds: 500));
         },
@@ -77,7 +88,12 @@ class DashboardScreen extends ConsumerWidget {
                 isLoading: deviceStatusAsync.isLoading,
               ),
 
-              const SizedBox(height: 24),
+              const SizedBox(height: 14),
+
+              // ── Remote Relay Control (Step 9) ───────────────────────
+              const RelayControlCard(),
+
+              const SizedBox(height: 20),
 
               // ── Section Title ───────────────────────────────────────
               Text(

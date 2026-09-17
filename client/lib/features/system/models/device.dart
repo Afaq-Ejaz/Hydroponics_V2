@@ -8,6 +8,7 @@ class Device {
     required this.name,
     required this.isActive,
     this.lastSeen,
+    this.relayState = false,
   });
 
   /// Device identifier, e.g. `"ESP32_01"`.
@@ -25,6 +26,9 @@ class Device {
   /// Last time the device sent telemetry (UTC).
   final DateTime? lastSeen;
 
+  /// Desired or active relay state (pump, actuator).
+  final bool relayState;
+
   factory Device.fromMap(Map<String, dynamic> map) {
     return Device(
       id: map['id'] as String,
@@ -34,6 +38,7 @@ class Device {
       lastSeen: map['last_seen'] != null
           ? DateTime.parse(map['last_seen'] as String)
           : null,
+      relayState: map['relay_state'] as bool? ?? false,
     );
   }
 

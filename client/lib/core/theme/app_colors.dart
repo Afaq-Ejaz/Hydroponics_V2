@@ -38,6 +38,11 @@ abstract final class AppColors {
   static const Color sensorWaterLevel = Color(0xFF6366F1); // Indigo
   static const Color sensorMoisture = Color(0xFF3B82F6);  // Blue
   static const Color sensorLight = Color(0xFFFACC15);     // Yellow
+  static const Color sensorFlow = Color(0xFF0284C7);      // Sky / Water Flow Blue
+
+  // ── Chart accents ─────────────────────────────────────────────────────
+  static const Color chartGrid = Color(0xFFE5E7EB);
+  static const Color chartTargetLine = Color(0xFF94A3B8);
 
   // ── Borders / Dividers ────────────────────────────────────────────────
   static const Color border = Color(0xFFE5E7EB);
