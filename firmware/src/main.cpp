@@ -102,6 +102,24 @@ void IRAM_ATTR flowPulseISR() {
 // toggled the pump on/off from the Flutter app.
 String RELAY_POLL_URL = String("http://10.9.26.152:8000/devices/") + DEVICE_ID + "/relay-command";
 
+// ── Auto-Pump Configuration ────────────────────────────────────────────
+// The pump can be triggered automatically by TWO conditions:
+//   1. TIMER: Every 120 minutes, pump runs for AUTO_PUMP_DURATION_MS
+//   2. MOISTURE: When soil moisture drops below the threshold
+// Manual control from the app always takes priority (override).
+
+const unsigned long AUTO_PUMP_INTERVAL_MS  = 120UL * 60UL * 1000UL; // 120 minutes
+const unsigned long AUTO_PUMP_DURATION_MS  = 45UL * 1000UL;         // run pump for 45 seconds
+const unsigned long AUTO_PUMP_COOLDOWN_MS  = 5UL * 60UL * 1000UL;   // 5-min cooldown between auto runs
+const float         MOISTURE_LOW_THRESHOLD = 30.0;                   // below 30% = soil too dry → pump ON
+
+// Auto-pump state
+bool          autoPumpActive    = false;   // is an auto-pump cycle currently running?
+unsigned long autoPumpStartTime = 0;       // when did the current auto-pump cycle start?
+unsigned long lastAutoPumpEnd   = 0;       // when did the last auto-pump cycle finish?
+bool          manualOverride    = false;   // true when user manually controls from app
+String        autoPumpReason    = "";      // "TIMER" or "MOISTURE" (for Serial logging)
+
 // ── DHT Setup ──────────────────────────────────────────────────────────
 #define DHT_TYPE DHT22
 DHT dht(PIN_DHT, DHT_TYPE);
@@ -222,9 +240,9 @@ float readFlowRate() {
 }
 
 /**
- * Poll the backend for the desired relay state.
- * Makes a lightweight GET request and parses {"relay_on": true/false}.
- * If the backend is unreachable, keeps the relay in its last known state.
+ * Poll the backend for the desired relay state (manual control from app).
+ * If the user manually toggles ON/OFF from the app, it sets manualOverride
+ * which takes priority over auto-pump logic.
  */
 void pollRelayCommand() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -234,25 +252,45 @@ void pollRelayCommand() {
 
   HTTPClient http;
   http.begin(RELAY_POLL_URL);
-  http.setTimeout(5000); // 5 second timeout — fast poll
+  http.setTimeout(5000);
 
   int httpCode = http.GET();
 
   if (httpCode == 200) {
     String body = http.getString();
-    // Simple JSON parse for {"relay_on": true/false}
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, body);
 
     if (!err && doc.containsKey("relay_on")) {
       bool desired = doc["relay_on"].as<bool>();
 
-      if (desired != currentRelayState) {
-        currentRelayState = desired;
-        digitalWrite(PIN_RELAY, desired ? HIGH : LOW);
-        Serial.printf("[Relay] ⚡ State changed → %s\n", desired ? "ON" : "OFF");
+      if (desired) {
+        // User manually turned pump ON from app → override auto-pump
+        manualOverride = true;
+        if (!currentRelayState) {
+          currentRelayState = true;
+          digitalWrite(PIN_RELAY, HIGH);
+          Serial.println("[Relay] ⚡ MANUAL ON from app");
+        } else {
+          Serial.println("[Relay] Manual: ON (no change)");
+        }
       } else {
-        Serial.printf("[Relay] Polled: %s (no change)\n", desired ? "ON" : "OFF");
+        // User turned pump OFF from app
+        if (manualOverride) {
+          // User explicitly turned off → stop any auto-pump too
+          manualOverride = false;
+          autoPumpActive = false;
+        }
+        if (!autoPumpActive && currentRelayState) {
+          // Only turn off if no auto-pump is running
+          currentRelayState = false;
+          digitalWrite(PIN_RELAY, LOW);
+          Serial.println("[Relay] ⚡ MANUAL OFF from app");
+        } else if (autoPumpActive) {
+          Serial.println("[Relay] App says OFF but auto-pump is running — staying ON");
+        } else {
+          Serial.println("[Relay] Polled: OFF (no change)");
+        }
       }
     } else {
       Serial.println("[Relay] ⚠ Failed to parse relay command JSON.");
@@ -263,6 +301,85 @@ void pollRelayCommand() {
   }
 
   http.end();
+}
+
+/**
+ * Check if the pump should auto-start based on:
+ *   1. TIMER — every 120 minutes
+ *   2. MOISTURE — soil moisture below threshold
+ *
+ * Auto-pump runs for AUTO_PUMP_DURATION_MS then turns off.
+ * Manual app control (manualOverride) always takes priority.
+ *
+ * @param moisture  Current soil moisture percentage (0-100)
+ */
+void checkAutoPump(float moisture) {
+  unsigned long now = millis();
+
+  // ── If manual override is active, skip all auto logic ──────────
+  if (manualOverride) {
+    Serial.println("[AutoPump] Skipped — manual override active");
+    return;
+  }
+
+  // ── If auto-pump is currently running, check if duration elapsed ─
+  if (autoPumpActive) {
+    if (now - autoPumpStartTime >= AUTO_PUMP_DURATION_MS) {
+      // Auto-pump duration finished → turn off
+      autoPumpActive = false;
+      currentRelayState = false;
+      lastAutoPumpEnd = now;
+      digitalWrite(PIN_RELAY, LOW);
+      Serial.printf("[AutoPump] ✅ Finished (%s cycle) — pump OFF\n",
+                    autoPumpReason.c_str());
+    } else {
+      unsigned long remaining = (AUTO_PUMP_DURATION_MS - (now - autoPumpStartTime)) / 1000;
+      Serial.printf("[AutoPump] Running (%s) — %lu seconds remaining\n",
+                    autoPumpReason.c_str(), remaining);
+    }
+    return;
+  }
+
+  // ── Cooldown check — don't re-trigger too soon ─────────────────
+  if (lastAutoPumpEnd > 0 && (now - lastAutoPumpEnd < AUTO_PUMP_COOLDOWN_MS)) {
+    unsigned long cooldownLeft = (AUTO_PUMP_COOLDOWN_MS - (now - lastAutoPumpEnd)) / 1000;
+    Serial.printf("[AutoPump] Cooldown — %lu seconds until next auto-pump allowed\n",
+                  cooldownLeft);
+    return;
+  }
+
+  // ── Condition 1: TIMER — every 120 minutes ─────────────────────
+  // On first boot, lastAutoPumpEnd == 0, so the timer starts from boot
+  bool timerTrigger = false;
+  if (lastAutoPumpEnd == 0) {
+    // First run: trigger after AUTO_PUMP_INTERVAL_MS from boot
+    timerTrigger = (now >= AUTO_PUMP_INTERVAL_MS);
+  } else {
+    timerTrigger = (now - lastAutoPumpEnd >= AUTO_PUMP_INTERVAL_MS);
+  }
+
+  // ── Condition 2: MOISTURE — soil too dry ────────────────────────
+  bool moistureTrigger = (!isnan(moisture) && moisture >= 0 && moisture < MOISTURE_LOW_THRESHOLD);
+
+  // ── Activate auto-pump if either condition is true ─────────────
+  if (timerTrigger || moistureTrigger) {
+    autoPumpActive = true;
+    autoPumpStartTime = now;
+    currentRelayState = true;
+    digitalWrite(PIN_RELAY, HIGH);
+
+    if (moistureTrigger) {
+      autoPumpReason = "MOISTURE";
+      Serial.printf("[AutoPump] ⚡ TRIGGERED by low moisture (%.1f%% < %.1f%%) — pump ON for %lu sec\n",
+                    moisture, MOISTURE_LOW_THRESHOLD, AUTO_PUMP_DURATION_MS / 1000);
+    } else {
+      autoPumpReason = "TIMER";
+      Serial.printf("[AutoPump] ⚡ TRIGGERED by 120-min timer — pump ON for %lu sec\n",
+                    AUTO_PUMP_DURATION_MS / 1000);
+    }
+  } else {
+    Serial.println("[AutoPump] Idle — no trigger conditions met");
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -499,8 +616,15 @@ void loop() {
 
   Serial.printf("  Flow Rate    : %.2f L/min\n", flowRate);
   Serial.printf("  Relay        : %s\n", currentRelayState ? "ON" : "OFF");
+  Serial.printf("  Auto-Pump    : %s\n", autoPumpActive ? autoPumpReason.c_str() : "IDLE");
+  Serial.printf("  Manual Override: %s\n", manualOverride ? "YES" : "NO");
 
   Serial.println();
+
+  // ── Auto-Pump Logic ────────────────────────────────────────────
+  // Check timer (120 min) and moisture threshold BEFORE polling
+  // the backend, so auto-pump can activate even if backend is down.
+  checkAutoPump(moisture);
 
   // ── Build JSON payload ─────────────────────────────────────────
   String payload = buildPayload(ph, ec, moisture, airTemp, humidity, waterLevel, flowRate);
@@ -519,9 +643,9 @@ void loop() {
     bufferPayload(payload);
   }
 
-  // ── Poll backend for relay command ─────────────────────────────
-  // After sending sensor data, check if the user toggled the pump
-  // from the Flutter app. This keeps relay control responsive.
+  // ── Poll backend for relay command (manual app control) ────────
+  // Manual ON/OFF from the app overrides auto-pump.
+  // If auto-pump is running and user hasn't intervened, it stays on.
   pollRelayCommand();
 
   Serial.println();

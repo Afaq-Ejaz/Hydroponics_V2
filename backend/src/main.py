@@ -363,18 +363,30 @@ async def set_relay_state(
     """Update the relay_state column for the given device.
 
     Expects JSON body: ``{ "relay_on": true/false }``
+    Also logs a pump event so the History screen can show when the pump was toggled.
     """
     relay_on = body.get("relay_on", False)
 
-    response = db.table("devices").select("id").eq("id", device_id).execute()
+    response = db.table("devices").select("id, system_id").eq("id", device_id).execute()
     if not response.data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Device not found",
         )
 
+    device = response.data[0]
     db.table("devices").update({"relay_state": relay_on}).eq("id", device_id).execute()
-    logger.info("Relay state for %s set to %s", device_id, relay_on)
+
+    # Log pump event for history tracking
+    action = "ON" if relay_on else "OFF"
+    db.table("alerts").insert({
+        "device_id": device_id,
+        "system_id": device.get("system_id"),
+        "severity": "info",
+        "message": f"Pump turned {action} (manual)",
+        "is_acknowledged": True,
+    }).execute()
+    logger.info("Relay state for %s set to %s (logged to history)", device_id, relay_on)
 
     return {"device_id": device_id, "relay_on": relay_on}
 
@@ -397,6 +409,32 @@ async def get_relay_command(
     if not response.data:
         return {"relay_on": False}
     return {"relay_on": response.data[0].get("relay_state", False)}
+
+
+@app.get(
+    "/devices/{device_id}/pump-history",
+    tags=["Devices"],
+    summary="Get pump ON/OFF event history",
+)
+async def get_pump_history(
+    device_id: str,
+    limit: int = 50,
+    db: Client = Depends(get_db),
+):
+    """Return recent pump toggle events for the History screen.
+
+    Queries alerts with 'Pump turned' messages for the given device.
+    """
+    response = (
+        db.table("alerts")
+        .select("id, message, created_at, severity")
+        .eq("device_id", device_id)
+        .like("message", "Pump turned%")
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return {"device_id": device_id, "events": response.data or []}
 
 
 # ── Alert Querying ──────────────────────────────────────────────────────

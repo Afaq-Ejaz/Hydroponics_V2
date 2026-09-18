@@ -40,7 +40,7 @@ class SensorCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // ── Icon badge + trend arrow ──
+          // ── Icon badge ──
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -51,11 +51,6 @@ class SensorCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Icon(meta.icon, size: 20, color: meta.color),
-              ),
-              Icon(
-                Icons.arrow_forward_ios,
-                size: 12,
-                color: meta.color,
               ),
             ],
           ),
