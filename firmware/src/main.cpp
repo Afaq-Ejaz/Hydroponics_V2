@@ -78,7 +78,7 @@ const float PH_SLOPE = 3.50;           // pH per volt — CALIBRATE ME
 #define PIN_DHT 4   // DHT22 data pin
 #define PIN_TRIG 5  // Ultrasonic HC-SR04 trigger
 #define PIN_ECHO 18 // Ultrasonic HC-SR04 echo
-#define PIN_FLOW 19 // Flow sensor pulse output (YF-S201 or similar)
+#define PIN_FLOW 19 // Flow sensor pulse output (YF-S201 or similar)/
 
 // Actuators
 #define PIN_RELAY 2 // Relay control (active HIGH) — remote via app

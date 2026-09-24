@@ -1,0 +1,346 @@
+================================================================================
+  APK BUILD CHECKLIST & SCALABLE DEPLOYMENT GUIDE
+  HAT (Hydroponics Automation & Telemetry) — Flutter App
+================================================================================
+Date: 2026-09-24
+Flutter: 3.47.1 (Dart 3.13.1)
+App ID: com.hat.hat_client
+
+This checklist covers EVERYTHING you must fix, configure, and decide before
+building an APK that other people can install on their phones and actually use.
+
+Items are grouped into:
+  [BLOCKER]  — App will CRASH or be USELESS without this fix
+  [REQUIRED] — App will build but feature will be broken or insecure
+  [POLISH]   — Professional quality, strongly recommended before sharing
+
+
+================================================================================
+SECTION 1: BACKEND — YOUR #1 BLOCKER
+================================================================================
+Right now your FastAPI backend runs on your laptop at http://10.9.26.152:8000.
+The moment a tester opens the APK outside your local Wi-Fi network, EVERY API
+call (relay control, device status, charts, alerts, pump history) will fail
+with a connection timeout. The app becomes a dead shell.
+
+YOU HAVE 3 OPTIONS (pick one):
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Option A: FREE — Railway.app (RECOMMENDED for your stage)                 │
+│─────────────────────────────────────────────────────────────────────────────│
+│ • Sign up at https://railway.app (free tier: 500 hrs/month)               │
+│ • Push your backend/ folder to a GitHub repo                              │
+│ • Railway auto-detects Python, deploys it, gives you a public URL like:   │
+│     https://hat-backend-production.up.railway.app                         │
+│ • Set your Supabase env vars in Railway's dashboard                       │
+│ • Cost: $0 for testing, ~$5/month when you scale                          │
+│ • Scales: Yes, zero-config horizontal scaling                             │
+│                                                                           │
+│ WHY THIS IS BEST: Zero server management, free tier is enough for         │
+│ testing with 5-10 users, HTTPS out of the box, no port forwarding.        │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Option B: FREE — Render.com                                               │
+│─────────────────────────────────────────────────────────────────────────────│
+│ • Similar to Railway. Free tier with auto-sleep after 15 min inactivity.  │
+│ • Cold starts take ~30 seconds (first request after sleep is slow).       │
+│ • Good enough for demos, not ideal for always-on ESP32 ingestion.         │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Option C: PAID — DigitalOcean / AWS Lightsail VPS ($4-6/month)            │
+│─────────────────────────────────────────────────────────────────────────────│
+│ • Spin up a $4/month Ubuntu droplet                                       │
+│ • Install Python, clone your repo, run with gunicorn + systemd            │
+│ • Add Caddy or Nginx for automatic HTTPS (Let's Encrypt)                  │
+│ • Full control, always-on, never sleeps                                   │
+│ • Best for when ESP32 hardware is sending data 24/7                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+AFTER YOU DEPLOY, you need to update exactly 3 places:
+
+  FILE 1 — Flutter App Config:
+    c:\HAT\client\lib\core\config\app_config.dart  (line 19)
+    CHANGE: 'http://10.9.26.152:8000'
+    TO:     'https://your-deployed-url.up.railway.app'
+
+  FILE 2 — ESP32 Firmware Backend URL:
+    c:\HAT\firmware\src\main.cpp  (line 52)
+    CHANGE: "http://10.9.26.152:8000/ingest"
+    TO:     "https://your-deployed-url.up.railway.app/ingest"
+
+  FILE 3 — ESP32 Firmware Relay Poll URL:
+    c:\HAT\firmware\src\main.cpp  (line 103)
+    CHANGE: "http://10.9.26.152:8000/devices/"
+    TO:     "https://your-deployed-url.up.railway.app/devices/"
+
+
+================================================================================
+SECTION 2: HARDWARE POWER — YOUR #2 BLOCKER
+================================================================================
+Right now the ESP32-S3 gets power from your laptop's USB port. The moment you
+close your laptop lid or unplug, the entire sensor system goes dead.
+
+SOLUTIONS:
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Option A: USB Phone Charger (Cheapest — good for indoor testing)          │
+│─────────────────────────────────────────────────────────────────────────────│
+│ • Use any 5V / 2A USB phone charger + micro-USB cable                     │
+│ • Plug into a wall outlet near your hydroponic setup                      │
+│ • Cost: ~Rs 500 (you probably already have one)                           │
+│ • PRO: Instant, no changes needed                                        │
+│ • CON: No battery backup if power goes out                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Option B: 5V Power Supply Module (Better for permanent install)           │
+│─────────────────────────────────────────────────────────────────────────────│
+│ • Hi-Link HLK-PM01 (220V AC → 5V DC) soldered into an enclosure          │
+│ • Directly wired to mains power, always on                                │
+│ • Cost: ~Rs 300-500                                                       │
+│ • PRO: Permanent, no USB cable dangling                                   │
+│ • CON: Requires basic soldering and electrical safety knowledge           │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Option C: UPS / Power Bank with Pass-Through (Best reliability)           │
+│─────────────────────────────────────────────────────────────────────────────│
+│ • Small USB UPS or power bank with pass-through charging                  │
+│ • If mains power drops, battery keeps ESP32 alive for hours               │
+│ • Cost: Rs 1500-3000                                                      │
+│ • PRO: Zero downtime during power cuts                                    │
+│ • CON: Higher cost                                                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+SECTION 3: ANDROID MANIFEST & PERMISSIONS [BLOCKER]
+================================================================================
+Your release APK is currently MISSING the INTERNET permission. Flutter only
+adds it to debug/ and profile/ manifests, NOT to the main release manifest.
+Without it, the release APK cannot make any network calls at all.
+
+CHECKLIST:
+
+[ ] 3.1  Add INTERNET permission to MAIN AndroidManifest.xml
+         File: c:\HAT\client\android\app\src\main\AndroidManifest.xml
+         Add BEFORE the <application> tag:
+
+         <uses-permission android:name="android.permission.INTERNET"/>
+         <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+
+[ ] 3.2  If backend stays on HTTP (not HTTPS), add cleartext traffic flag
+         In the same file, add to the <application> tag:
+
+         android:usesCleartextTraffic="true"
+
+         NOTE: If you deploy backend to Railway/Render (HTTPS), you do NOT
+         need this flag. HTTPS is always preferred.
+
+[ ] 3.3  Change app display name from "hat_client" to something user-friendly
+         In AndroidManifest.xml, change:
+           android:label="hat_client"
+         To:
+           android:label="HAT Hydroponics"
+
+
+================================================================================
+SECTION 4: APP SIGNING [REQUIRED]
+================================================================================
+Right now your release build uses the DEBUG signing key. This means:
+  • Google Play Store will reject it if you ever want to publish
+  • Some phones show "untrusted app" warnings more aggressively
+  • You cannot update the APK later if you lose the debug keystore
+
+CHECKLIST:
+
+[ ] 4.1  Generate a release signing keystore (ONE TIME — save it forever):
+
+         keytool -genkey -v -keystore hat-release-key.jks ^
+           -keyalg RSA -keysize 2048 -validity 10000 ^
+           -alias hat-key
+
+         Store the .jks file and password somewhere SAFE (NOT in git).
+
+[ ] 4.2  Create c:\HAT\client\android\key.properties:
+
+         storePassword=<your-password>
+         keyPassword=<your-password>
+         keyAlias=hat-key
+         storeFile=<full-path-to>/hat-release-key.jks
+
+[ ] 4.3  Update build.gradle.kts to reference the keystore:
+         File: c:\HAT\client\android\app\build.gradle.kts
+
+         In the release buildType, replace:
+           signingConfig = signingConfigs.getByName("debug")
+         With a proper release signingConfig block.
+
+[ ] 4.4  Add key.properties and *.jks to .gitignore (NEVER commit these)
+
+
+================================================================================
+SECTION 5: APP IDENTITY & BRANDING [POLISH]
+================================================================================
+
+[ ] 5.1  Change Application ID from "com.hat.hat_client" to something proper
+         Example: "com.hathydroponics.app" or "io.hat.hydroponics"
+         File: c:\HAT\client\android\app\build.gradle.kts  (line 19)
+
+         WARNING: Once you distribute the APK, changing the app ID later
+         means users have to uninstall and reinstall. Pick a good one now.
+
+[ ] 5.2  Create a proper app icon (replace default Flutter icon)
+         Use https://www.appicon.co/ or the flutter_launcher_icons package
+         to generate all required Android icon sizes from a single PNG.
+
+[ ] 5.3  Create a splash screen (loading screen when app starts)
+         Use the flutter_native_splash package for a branded boot experience.
+
+[ ] 5.4  Set a proper version number in pubspec.yaml
+         Currently: version: 1.0.0+1
+         For beta testing, consider: version: 0.1.0+1
+
+
+================================================================================
+SECTION 6: ESP32 WI-FI CONFIGURATION [REQUIRED for testers]
+================================================================================
+Right now the Wi-Fi credentials are HARDCODED in firmware:
+  c:\HAT\firmware\src\main.cpp  (lines 48-49)
+    WIFI_SSID     = "UCP"
+    WIFI_PASSWORD  = "Ucp@987987"
+
+This means the ESP32 ONLY works on the "UCP" network. If a tester takes the
+hardware home, it won't connect.
+
+SOLUTIONS (in order of effort):
+
+  Option A (Quick): Keep hardcoded, just reflash for each test site
+  Option B (Better): Use ESP32 WiFiManager library — creates a temporary
+    hotspot ("HAT-Setup") on first boot. User connects with phone and
+    enters their home Wi-Fi credentials. Saves to flash, survives reboots.
+  Option C (Best): BLE provisioning from the Flutter app (future roadmap)
+
+
+================================================================================
+SECTION 7: SECURITY HARDENING [REQUIRED before sharing APK widely]
+================================================================================
+
+[ ] 7.1  The API key is hardcoded in plain text in firmware:
+           const char *API_KEY = "dev_secret_key_abc123";
+         This is fine for development but anyone who decompiles the firmware
+         can see it. For now this is acceptable since only YOU flash the
+         firmware. But do NOT expose this key in the Flutter app or APK.
+
+[ ] 7.2  Verify the Supabase anon key in app_config.dart is truly the ANON
+         (public) key and NOT the service_role key. (CONFIRMED: it is safe.)
+
+[ ] 7.3  Make sure .env files and key.properties are in .gitignore.
+         File: c:\HAT\.gitignore — verify these entries exist:
+           *.env
+           key.properties
+           *.jks
+
+
+================================================================================
+SECTION 8: PRE-BUILD SMOKE TEST [REQUIRED]
+================================================================================
+
+[ ] 8.1  Run flutter analyze to check for code errors:
+           cd c:\HAT\client
+           flutter analyze
+
+[ ] 8.2  Run a debug build on a physical phone first:
+           flutter run --release
+
+[ ] 8.3  Test every screen manually:
+           [ ] Login / Signup
+           [ ] Dashboard loads sensor cards
+           [ ] Charts screen shows line graphs
+           [ ] History screen shows pump events
+           [ ] Alerts screen shows notifications + acknowledge works
+           [ ] Settings screen + logout works
+           [ ] Pump relay toggle works end-to-end
+
+[ ] 8.4  Test with Wi-Fi off on the phone:
+           [ ] App shows graceful error messages, does NOT crash
+           [ ] App recovers when Wi-Fi is turned back on
+
+
+================================================================================
+SECTION 9: BUILD THE APK
+================================================================================
+
+Once all items above are complete:
+
+  COMMAND TO BUILD:
+    cd c:\HAT\client
+    flutter build apk --release
+
+  OUTPUT FILE LOCATION:
+    c:\HAT\client\build\app\outputs\flutter-apk\app-release.apk
+
+  APK SIZE: Expected ~15-25 MB
+
+  TO BUILD A SMALLER, SPLIT APK (per CPU architecture):
+    flutter build apk --split-per-abi
+
+  This creates 3 APKs:
+    app-armeabi-v7a-release.apk    (~12 MB, older phones)
+    app-arm64-v8a-release.apk      (~13 MB, modern phones — MOST COMMON)
+    app-x86_64-release.apk         (~14 MB, emulators only)
+
+  Give testers the arm64-v8a APK unless they have very old phones.
+
+
+================================================================================
+SECTION 10: DISTRIBUTION TO TESTERS
+================================================================================
+
+  Option A: Direct APK sharing (WhatsApp / Google Drive link)
+    • Simple, instant, no setup
+    • Testers must enable "Install from unknown sources" on their phone
+    • No auto-updates — you must send a new APK every time
+
+  Option B: Firebase App Distribution (RECOMMENDED)
+    • Free service by Google
+    • Upload APK to Firebase console
+    • Invite testers by email
+    • Testers get a notification when a new version is available
+    • Tracks who installed, crash reports included
+
+  Option C: Google Play Internal Testing Track
+    • Upload to Play Console → Internal Testing
+    • Up to 100 testers via email invite
+    • They install from Play Store (trusted, auto-updates)
+    • Requires a one-time $25 developer account fee
+
+
+================================================================================
+PRIORITY ORDER — WHAT TO DO FIRST
+================================================================================
+
+  STEP 1: Deploy backend to Railway.app (30 min)
+          → This unblocks EVERYTHING. Without it, the APK is useless.
+
+  STEP 2: Update app_config.dart with the new HTTPS URL (2 min)
+
+  STEP 3: Add INTERNET permission to release AndroidManifest.xml (2 min)
+
+  STEP 4: Change app label to "HAT Hydroponics" (1 min)
+
+  STEP 5: Run flutter analyze + test on a physical phone (15 min)
+
+  STEP 6: flutter build apk --release (5 min)
+
+  STEP 7: Share the APK with testers
+
+  STEP 8: (When ready) Generate proper signing key + app icon
+
+  STEP 9: Update ESP32 firmware URL + reflash for the new backend
+
+================================================================================
+END OF CHECKLIST
+================================================================================
