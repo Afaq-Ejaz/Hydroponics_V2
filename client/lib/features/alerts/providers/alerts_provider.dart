@@ -174,4 +174,52 @@ class AlertsNotifier extends AutoDisposeAsyncNotifier<List<SystemAlert>> {
       }
     }
   }
+
+  /// Mark ALL unacknowledged alerts as acknowledged in one batch.
+  Future<void> acknowledgeAll() async {
+    final previousState = state.value ?? [];
+    final unacknowledged = previousState.where((a) => !a.isAcknowledged).toList();
+
+    if (unacknowledged.isEmpty) return;
+
+    // Optimistic update — mark all as acknowledged instantly
+    state = AsyncData([
+      for (final a in previousState)
+        if (!a.isAcknowledged)
+          a.copyWith(
+            isAcknowledged: true,
+            acknowledgedAt: DateTime.now(),
+          )
+        else
+          a,
+    ]);
+
+    final systemId = ref.read(activeSystemIdProvider);
+    if (systemId == null) return;
+
+    try {
+      // Call backend endpoint (uses service role key, bypasses RLS)
+      final url = Uri.parse(
+        '${AppConfig.backendBaseUrl}/alerts/acknowledge-all',
+      );
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'system_id': systemId}),
+      ).timeout(AppConfig.httpTimeout);
+
+      if (response.statusCode != 200) {
+        // Backend returned an error — rollback
+        state = AsyncData(previousState);
+        throw Exception('Backend returned ${response.statusCode}');
+      }
+
+      // Force a fresh fetch so the UI is fully in sync with the database
+      ref.invalidateSelf();
+    } catch (e) {
+      // Rollback on failure
+      state = AsyncData(previousState);
+      rethrow;
+    }
+  }
 }

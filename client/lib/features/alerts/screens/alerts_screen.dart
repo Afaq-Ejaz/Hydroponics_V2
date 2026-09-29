@@ -26,6 +26,25 @@ class AlertsScreen extends ConsumerWidget {
             ? '${activeSystem!.name} Alerts'
             : 'Alerts & Incidents'),
         actions: [
+          // ── Acknowledge All button (only shown when there are active alerts)
+          if (unreadCount > 0)
+            TextButton.icon(
+              onPressed: () => _handleAcknowledgeAll(context, ref, unreadCount),
+              icon: const Icon(Icons.done_all_rounded, size: 18,
+                  color: AppColors.primary),
+              label: const Text(
+                'Ack All',
+                style: TextStyle(
+                  color: AppColors.primary,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                ),
+              ),
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                visualDensity: VisualDensity.compact,
+              ),
+            ),
           IconButton(
             icon: const Icon(Icons.refresh_rounded),
             tooltip: 'Refresh Alerts',
@@ -147,6 +166,61 @@ class AlertsScreen extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  Future<void> _handleAcknowledgeAll(
+    BuildContext context, WidgetRef ref, int count,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Acknowledge All Alerts'),
+        content: Text(
+          'Mark all $count active alert${count == 1 ? '' : 's'} as acknowledged?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text(
+              'Acknowledge All',
+              style: TextStyle(
+                color: AppColors.primary,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      await ref.read(alertsProvider.notifier).acknowledgeAll();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('$count alert${count == 1 ? '' : 's'} acknowledged'),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to acknowledge alerts. Please retry.'),
+            backgroundColor: AppColors.alertCritical,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
   }
 
   Widget _buildAlertsList(

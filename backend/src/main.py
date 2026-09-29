@@ -472,6 +472,43 @@ def get_alerts(
     )
 
 
+@app.post(
+    "/alerts/acknowledge-all",
+    tags=["Alerts"],
+    summary="Acknowledge all active alerts for a system",
+)
+async def acknowledge_all_alerts(
+    body: dict,
+    db: Client = Depends(get_db),
+):
+    """Batch-acknowledge every unacknowledged alert for the given system.
+
+    Expects JSON body: ``{ "system_id": "..." }``
+    Returns the count of alerts that were acknowledged.
+    """
+    system_id = body.get("system_id")
+    if not system_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="system_id is required",
+        )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    result = (
+        db.table("alerts")
+        .update({"is_acknowledged": True, "acknowledged_at": now_iso})
+        .eq("system_id", system_id)
+        .eq("is_acknowledged", False)
+        .execute()
+    )
+
+    count = len(result.data) if result.data else 0
+    logger.info("Acknowledged %d alerts for system %s", count, system_id)
+
+    return {"acknowledged_count": count, "system_id": system_id}
+
+
 # ── Telemetry Aggregation ───────────────────────────────────────────────
 
 
