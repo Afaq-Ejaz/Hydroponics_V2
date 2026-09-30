@@ -1,6 +1,6 @@
 {
-    "name": "hat_client",
-    "short_name": "hat_client",
+    "name": "MATH",
+    "short_name": "MATH",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

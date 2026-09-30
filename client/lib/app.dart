@@ -15,7 +15,7 @@ class HATApp extends ConsumerWidget {
     final router = ref.watch(routerProvider);
 
     return MaterialApp.router(
-      title: 'Smart IoT Hub',
+      title: 'MATH',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
       routerConfig: router,
